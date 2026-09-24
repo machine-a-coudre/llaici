@@ -1,0 +1,29 @@
+# Generated/downloaded data (see Makefile — everything here is reproducible)
+data/parquet/
+data/db/
+data/samples/
+
+# Fine-tuning outputs (scripts/06-08, see FINETUNING.md)
+models/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node / frontend
+node_modules/
+dist/
+
+# Env files (secrets)
+.env
+.env.local
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local skills/config (agent-only, not part of the project)
+.claude/

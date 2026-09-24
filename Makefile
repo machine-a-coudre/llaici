@@ -1,0 +1,106 @@
+BBOX ?= -9.72,35.91,3.59,43.82
+PARQUET_DIR := data/parquet
+SAMPLES_DIR := data/samples
+ROWS ?= 100
+
+.PHONY: download-overture download-overture-places up build-up down sample-entities validate-samples generate-questions split-dataset format-for-training generate-dataset finetune finetune-mlx evaluate merge-and-quantize merge-and-quantize-mlx finetune-pipeline-cuda finetune-pipeline-mlx app-up app-build-up app-down
+
+download-overture:
+	mkdir -p $(PARQUET_DIR)
+	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=division -o $(PARQUET_DIR)/eu_divisions.parquet
+	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=division_area -o $(PARQUET_DIR)/eu_division_areas.parquet
+	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=infrastructure -o $(PARQUET_DIR)/eu_infrastructures.parquet
+	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
+	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
+
+# STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Example: make sample-entities ROWS=70000
+sample-entities:
+	mkdir -p $(SAMPLES_DIR)
+	uvx --with duckdb python3 scripts/01_sample_entities.py --rows $(ROWS) --out $(SAMPLES_DIR)/entities.jsonl
+
+# STEP 4: fill templates with sampled entities and validate by execution (see scripts/02_fill_and_validate.py)
+validate-samples:
+	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated.jsonl
+
+# STEP 4: generate NL question formulations (FR+EN) for validated pairs -> dataset.jsonl (see scripts/03_generate_questions.py)
+generate-questions:
+	python3 scripts/03_generate_questions.py --in $(SAMPLES_DIR)/validated.jsonl --out $(SAMPLES_DIR)/dataset.jsonl $(if $(MAX_PER_TEMPLATE),--max-per-template $(MAX_PER_TEMPLATE))
+
+# STEP 5 (fine-tuning) prep, step 1c: split dataset.jsonl into train/val, stratified by template (see FINETUNING.md, scripts/04_split_train_val.py)
+split-dataset:
+	python3 scripts/04_split_train_val.py --dataset $(SAMPLES_DIR)/dataset.jsonl --validated $(SAMPLES_DIR)/validated.jsonl --train-out $(SAMPLES_DIR)/train.jsonl --val-out $(SAMPLES_DIR)/val.jsonl $(if $(VAL_RATIO),--val-ratio $(VAL_RATIO))
+
+# STEP 5 (fine-tuning) prep, steps 1a/1b: format train/val pairs as Qwen chat messages (see FINETUNING.md, scripts/05_format_for_training.py)
+format-for-training:
+	python3 scripts/05_format_for_training.py --dir $(SAMPLES_DIR)
+
+# STEP 4 + STEP 5 prep, full pipeline: sample -> validate -> generate questions ->
+# split train/val -> format for training (see DESIGN.md/FINETUNING.md). Chains the
+# 5 targets above in order so `data/samples/train.jsonl` and `val.jsonl` come out
+# ready for scripts/06_finetune.py. Example: make generate-dataset ROWS=70000
+generate-dataset: sample-entities validate-samples generate-questions split-dataset format-for-training
+
+# STEP 5 (fine-tuning), §3/§4: QLoRA fine-tune Qwen3-0.6B (see FINETUNING.md, scripts/06_finetune.py)
+# ⚠️ Requires a CUDA GPU + `pip install unsloth` — not runnable on this Mac dev machine.
+finetune:
+	python3 scripts/06_finetune.py
+
+# STEP 5, §3/§4 Apple Silicon alternative: same job as `finetune`, but via mlx-lm
+# instead of Unsloth, since Unsloth requires a CUDA GPU (see FINETUNING.md).
+# ⚠️ Requires `pip install "mlx-lm[train]"` on a Mac.
+finetune-mlx:
+	python3 scripts/06_finetune_mlx.py
+
+# STEP 5, §5: evaluate the fine-tuned model's generated SQL against real DuckDB (see FINETUNING.md, scripts/07_evaluate.py)
+# ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
+evaluate:
+	python3 scripts/07_evaluate.py
+
+# STEP 5, §6: merge the LoRA adapter and export to quantized GGUF (see FINETUNING.md, scripts/08_merge_and_quantize.py)
+# ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
+merge-and-quantize:
+	python3 scripts/08_merge_and_quantize.py
+
+# STEP 5, §6 Apple Silicon alternative: merge (mlx_lm.fuse) + convert/quantize to
+# GGUF (llama.cpp's convert_hf_to_gguf.py) for an adapter from `finetune-mlx`.
+# ⚠️ Requires `pip install "mlx-lm[train]"` and a local ggml-org/llama.cpp clone
+# (see LLAMA_CPP_DIR). Example: make merge-and-quantize-mlx LLAMA_CPP_DIR=~/llama.cpp
+merge-and-quantize-mlx:
+	python3 scripts/08_merge_and_quantize_mlx.py --llama-cpp-dir $(LLAMA_CPP_DIR)
+
+# STEP 5, full pipeline (CUDA/Unsloth path): fine-tune -> evaluate -> merge/quantize
+# to GGUF (FINETUNING.md §3-6). Assumes data/samples/{train,val}_formatted.jsonl
+# already exist (see `generate-dataset`). Chains the 3 targets above in order.
+# ⚠️ Requires a CUDA GPU + `pip install unsloth`.
+finetune-pipeline-cuda: finetune evaluate merge-and-quantize
+
+# STEP 5, full pipeline (Apple Silicon/mlx-lm path): fine-tune -> merge/quantize to
+# GGUF (FINETUNING.md §3-6 MLX alternatives). No MLX equivalent of `evaluate` is
+# chained here: scripts/07_evaluate.py loads the model via Unsloth (CUDA-only),
+# so it can't run against an mlx-lm adapter as-is (see FINETUNING.md §5).
+# ⚠️ Requires `pip install "mlx-lm[train]"` and a local ggml-org/llama.cpp clone.
+# Example: make finetune-pipeline-mlx LLAMA_CPP_DIR=~/llama.cpp
+finetune-pipeline-mlx: finetune-mlx merge-and-quantize-mlx
+
+build-up:
+	docker compose build
+	docker compose up
+
+up:
+	docker compose up
+
+down:
+	docker compose down -v
+
+# Run the demo app (backend + frontend, see app/README.md) together, both with
+# hot reload via bind-mounted source (docker-compose.yml). Needs llama-server
+# running separately on the host — see app/README.md.
+app-up:
+	docker compose up backend frontend
+
+app-build-up:
+	docker compose build backend frontend
+	docker compose up backend frontend
+
+app-down:
+	docker compose stop backend frontend

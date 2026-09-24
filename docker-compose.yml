@@ -1,0 +1,50 @@
+services:
+  duckdb:
+    build: .
+    container_name: liaici-duckdb
+    volumes:
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+    network_mode: host
+    command: ["duckdb", "-ui", "/app/data/db/llaici.duckdb"]
+    stdin_open: true
+    tty: true
+
+  backend:
+    build: ./app/backend
+    container_name: llaici-backend
+    volumes:
+      # Hot reload: host edits under app/backend/app land in the container
+      # immediately, uvicorn's --reload (Dockerfile CMD) picks them up.
+      - ./app/backend/app:/app/app
+      # Same data/ the rest of the project uses (scripts/*.py, the `duckdb`
+      # service above) — DB_PATH's default ("data/db/llaici.duckdb") resolves
+      # against this the same way it does when run directly on the host.
+      - ./data:/app/data
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    environment:
+      # host.docker.internal: Docker Desktop's DNS name for the host machine —
+      # llama-server runs on the host (see app/README.md), not in a container.
+      LLAMA_SERVER_URL: http://host.docker.internal:8080/v1
+
+  frontend:
+    build: ./app/frontend
+    container_name: llaici-frontend
+    volumes:
+      # Hot reload: host edits land in the container, Vite's dev server (with
+      # HMR) picks them up immediately.
+      - ./app/frontend:/app
+      # Anonymous volume: without this, the bind mount above would shadow the
+      # container's own Linux-built node_modules with whatever's on the host
+      # (macOS/Windows binaries for esbuild/rollup won't run in the container).
+      # Listed after the bind mount so it takes precedence for this one subpath.
+      - /app/node_modules
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    depends_on:
+      - backend

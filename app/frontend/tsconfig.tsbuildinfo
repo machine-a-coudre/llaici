@@ -1,0 +1,1 @@
+{"root":["./src/api.ts","./src/history.ts","./src/main.ts","./src/types.ts","./src/vite-env.d.ts","./src/app.vue","./src/components/confirmmodal.vue","./src/components/mapview.vue","./src/components/promptpanel.vue"],"version":"5.6.3"}
