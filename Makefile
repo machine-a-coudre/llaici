@@ -1,4 +1,4 @@
-BBOX ?= -9.72,35.91,3.59,43.82
+BBOX ?= -9.72,35.91,3.59,43.82 # or -9.84,35.55,3.43,44.43
 PARQUET_DIR := data/parquet
 SAMPLES_DIR := data/samples
 ROWS ?= 100
@@ -7,11 +7,11 @@ ROWS ?= 100
 
 download-overture:
 	mkdir -p $(PARQUET_DIR)
-	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=division -o $(PARQUET_DIR)/eu_divisions.parquet
-	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=division_area -o $(PARQUET_DIR)/eu_division_areas.parquet
-	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=infrastructure -o $(PARQUET_DIR)/eu_infrastructures.parquet
-	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
-	uvx overturemaps download --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
+	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=division -o $(PARQUET_DIR)/eu_divisions.parquet
+	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=division_area -o $(PARQUET_DIR)/eu_division_areas.parquet
+	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=infrastructure -o $(PARQUET_DIR)/eu_infrastructures.parquet
+	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
+	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
 
 # STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Example: make sample-entities ROWS=70000
 sample-entities:
