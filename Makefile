@@ -3,15 +3,23 @@ PARQUET_DIR := data/parquet
 SAMPLES_DIR := data/samples
 ROWS ?= 100
 
-.PHONY: download-overture download-overture-places up build-up down sample-entities validate-samples generate-questions split-dataset format-for-training generate-dataset finetune finetune-mlx evaluate merge-and-quantize merge-and-quantize-mlx finetune-pipeline-cuda finetune-pipeline-mlx app-up app-build-up app-down
+# Dedicated venv for the CUDA/Unsloth fine-tuning path (see `finetune-venv`).
+FINETUNE_VENV := .venv-finetune
+FINETUNE_PY := $(FINETUNE_VENV)/bin/python
+# PyTorch CUDA build. Must be >= cu128 for Blackwell GPUs (RTX 50xx, sm_120) and <=
+# the max CUDA version the driver supports. cu132+ has no recent xformers wheels,
+# which Unsloth needs, so cu130 is the newest usable one (-> torch 2.12).
+TORCH_BACKEND ?= cu130
+
+.PHONY: download-overture download-overture-places up build-up down sample-entities validate-samples generate-questions split-dataset format-for-training generate-dataset finetune-venv finetune finetune-mlx evaluate merge-and-quantize merge-and-quantize-mlx finetune-pipeline-cuda finetune-pipeline-mlx app-up app-build-up app-down
 
 download-overture:
 	mkdir -p $(PARQUET_DIR)
-	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=division -o $(PARQUET_DIR)/eu_divisions.parquet
-	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=division_area -o $(PARQUET_DIR)/eu_division_areas.parquet
-	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=infrastructure -o $(PARQUET_DIR)/eu_infrastructures.parquet
-	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
-	uvx overturemaps download --no-stac --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
+	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=division -o $(PARQUET_DIR)/eu_divisions.parquet
+	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=division_area -o $(PARQUET_DIR)/eu_division_areas.parquet
+	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=infrastructure -o $(PARQUET_DIR)/eu_infrastructures.parquet
+	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
+	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
 
 # STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Example: make sample-entities ROWS=70000
 sample-entities:
@@ -40,10 +48,24 @@ format-for-training:
 # ready for scripts/06_finetune.py. Example: make generate-dataset ROWS=70000
 generate-dataset: sample-entities validate-samples generate-questions split-dataset format-for-training
 
+# STEP 5 (fine-tuning), setup for the CUDA path: creates $(FINETUNE_VENV) with Unsloth
+# and a CUDA build of PyTorch, then checks the GPU is usable. The unsloth floor makes
+# an unresolvable TORCH_BACKEND fail loudly instead of silently picking an ancient,
+# dependency-less unsloth release. Only reruns if the venv is missing
+# (`rm -rf $(FINETUNE_VENV)` to rebuild). Example: make finetune-venv TORCH_BACKEND=cu128
+finetune-venv: $(FINETUNE_VENV)/.ready
+
+$(FINETUNE_VENV)/.ready:
+	uv venv --python 3.12 $(FINETUNE_VENV)
+	uv pip install --python $(FINETUNE_PY) --torch-backend=$(TORCH_BACKEND) "unsloth>=2026.9" duckdb==1.5.5
+	$(FINETUNE_PY) -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print('torch', torch.__version__, '-', torch.cuda.get_device_name(0), 'sm_%d%d' % torch.cuda.get_device_capability(0)); torch.ones(1, device='cuda')"
+	$(FINETUNE_PY) -c "import unsloth; print('unsloth', unsloth.__version__)"
+	touch $@
+
 # STEP 5 (fine-tuning), §3/§4: QLoRA fine-tune Qwen3-0.6B (see FINETUNING.md, scripts/06_finetune.py)
-# ⚠️ Requires a CUDA GPU + `pip install unsloth` — not runnable on this Mac dev machine.
-finetune:
-	python3 scripts/06_finetune.py
+# ⚠️ Requires a CUDA GPU — runs in the venv set up by `finetune-venv` (built automatically).
+finetune: $(FINETUNE_VENV)/.ready
+	$(FINETUNE_PY) scripts/06_finetune.py
 
 # STEP 5, §3/§4 Apple Silicon alternative: same job as `finetune`, but via mlx-lm
 # instead of Unsloth, since Unsloth requires a CUDA GPU (see FINETUNING.md).
@@ -53,13 +75,13 @@ finetune-mlx:
 
 # STEP 5, §5: evaluate the fine-tuned model's generated SQL against real DuckDB (see FINETUNING.md, scripts/07_evaluate.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
-evaluate:
-	python3 scripts/07_evaluate.py
+evaluate: $(FINETUNE_VENV)/.ready
+	$(FINETUNE_PY) scripts/07_evaluate.py
 
 # STEP 5, §6: merge the LoRA adapter and export to quantized GGUF (see FINETUNING.md, scripts/08_merge_and_quantize.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
-merge-and-quantize:
-	python3 scripts/08_merge_and_quantize.py
+merge-and-quantize: $(FINETUNE_VENV)/.ready
+	$(FINETUNE_PY) scripts/08_merge_and_quantize.py
 
 # STEP 5, §6 Apple Silicon alternative: merge (mlx_lm.fuse) + convert/quantize to
 # GGUF (llama.cpp's convert_hf_to_gguf.py) for an adapter from `finetune-mlx`.
@@ -71,7 +93,7 @@ merge-and-quantize-mlx:
 # STEP 5, full pipeline (CUDA/Unsloth path): fine-tune -> evaluate -> merge/quantize
 # to GGUF (FINETUNING.md §3-6). Assumes data/samples/{train,val}_formatted.jsonl
 # already exist (see `generate-dataset`). Chains the 3 targets above in order.
-# ⚠️ Requires a CUDA GPU + `pip install unsloth`.
+# ⚠️ Requires a CUDA GPU (venv set up automatically, see `finetune-venv`).
 finetune-pipeline-cuda: finetune evaluate merge-and-quantize
 
 # STEP 5, full pipeline (Apple Silicon/mlx-lm path): fine-tune -> merge/quantize to

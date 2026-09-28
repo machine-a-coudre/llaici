@@ -75,6 +75,7 @@ def connect() -> duckdb.DuckDBPyConnection:
     # of available memory. Raise it if more CPU cores are available and speed matters
     # more than staying light (e.g. for a real ROWS=70000 run on a beefier machine).
     con.execute("SET threads=2")
+    con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
 
@@ -685,6 +686,15 @@ def main() -> None:
 
     templates = list(SAMPLERS) if args.template == "all" else [args.template]
     target_per_template = max(1, args.rows // len(templates))
+
+    # Fail fast: attempt_with_hard_timeout() counts any worker error as a miss, so a
+    # connection problem that can never resolve itself (DB locked by the `duckdb`
+    # container, missing extension, ...) would otherwise spin up thousands of doomed
+    # attempts. Checked before opening --out so an existing output isn't truncated.
+    try:
+        connect().close()
+    except duckdb.Error as e:
+        sys.exit(f"# cannot open {DB_PATH}: {e}\n# (DB locked? stop the container: docker compose stop duckdb)")
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

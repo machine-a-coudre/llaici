@@ -50,6 +50,7 @@ def connect():
 
     con = duckdb.connect(DB_PATH, read_only=True)
     con.execute("SET threads=2")  # see scripts/01_sample_entities.py's connect() note
+    con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
 

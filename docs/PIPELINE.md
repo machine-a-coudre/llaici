@@ -116,7 +116,7 @@ make format-for-training
 
 ## Step 06 — Fine-tune, QLoRA on Qwen3-0.6B (`scripts/06_finetune.py`)
 
-`FINETUNING.md` §3/§4. ⚠️ Requires an NVIDIA GPU with CUDA and `pip install unsloth` — unavailable in this development environment, so unlike every step above, **this one has not been run/tested**.
+`FINETUNING.md` §3/§4. ⚠️ Requires an NVIDIA GPU with CUDA; Unsloth is installed in a dedicated venv by `make finetune-venv` (run automatically by `make finetune`) — unavailable in this development environment, so unlike every step above, **this one has not been run/tested**.
 
 ```bash
 make finetune

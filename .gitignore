@@ -5,11 +5,14 @@ data/samples/
 
 # Fine-tuning outputs (scripts/06-08, see FINETUNING.md)
 models/
+# Unsloth's patched-trainer cache, regenerated in the cwd on every `import unsloth`
+unsloth_compiled_cache/
 
 # Python
 __pycache__/
 *.pyc
 .venv/
+.venv-finetune/
 
 # Node / frontend
 node_modules/

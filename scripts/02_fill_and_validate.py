@@ -412,6 +412,7 @@ def connect() -> duckdb.DuckDBPyConnection:
     # note in sample_entities.py's connect(). More RAM doesn't speed this up; more
     # CPU cores (and raising this value) would.
     con.execute("SET threads=2")
+    con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
 
