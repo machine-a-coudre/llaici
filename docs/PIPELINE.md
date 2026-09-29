@@ -121,7 +121,7 @@ make generate-questions MAX_PER_TEMPLATE=5000   # cap pairs per template (useful
 
 ## Step 04 — Split into train/val (`scripts/04_split_train_val.py`)
 
-Splits `dataset.jsonl` into train/val sets, stratified by template so a low-volume template (e.g. `bordering`) doesn't end up entirely absent from validation (`FINETUNING.md` §1c).
+Splits `dataset.jsonl` into train/val sets, stratified by template so a low-volume template (e.g. `bordering`) doesn't end up entirely absent from validation. The split is done **per SQL query**: all the questions (FR, EN, other phrasings) of a given SQL go to the same side, so no val SQL was seen in training. `VAL_RATIO` is therefore a fraction of distinct SQL queries per template, not of pairs (`FINETUNING.md` §1c).
 
 ```bash
 make split-dataset
