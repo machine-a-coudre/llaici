@@ -103,29 +103,38 @@ Pass `--yes`/`-y` to skip the prompt and always overwrite (e.g. for scripted/CI 
 
 Fills each sampled row's matching SQL template (see `TEMPLATES.md`) with its real values and executes it, keeping only pairs that return a non-empty result. Output: `data/samples/validated_samples.jsonl`.
 
+**One row per language (FR, EN) per sampled entity, each with its own SQL.** Samplers return Overture's `names.primary`, the *local* name — "España", or "Maroc ⵍⵎⵖⵔⵉⴱ المغرب" (Morocco's primary name carries all three official scripts). Used as-is, FR questions read "où se trouve España" and the model never sees the names users actually type. So each entity's name is resolved to its `name_fr` / `name_en` exonym (one batched lookup per reference table), and the template is filled and executed once per language: the FR row matches `ILIKE '%Espagne%'`, the EN row `ILIKE '%Spain%'` — the SQL always contains the term typed in the question (the model doesn't translate, see `DESIGN.md` STEP 3). Details:
+- **10% local names** (`LOCAL_NAME_RATIO=`, default 0.1): that share of (entity, language) rows keeps the local name even when an exonym exists, since some users do type "España".
+- **No exonym** (most small towns): the local name is used — it's what everyone types anyway.
+- **Non-Latin names are never used** (no one types "المغرب" in a FR/EN question): if neither the exonym nor the local name is in Latin script, that (entity, language) gets no row — counted as "no usable name" in the summary.
+- Each row carries `lang` and `entity` (the line number in `entities.jsonl`), used by steps 03 and 04.
+
 Not to be confused with the **validation set** (`val.jsonl` / `val_formatted.jsonl`, step 04): "validated" here means *the filled SQL was checked by execution* — a data-quality filter before the dataset is built. The validation set is the held-out split used to measure the model (eval loss during `06_finetune.py`, generated-SQL checks in `07_evaluate.py`).
 
 ```bash
 make validate-samples
 make validate-samples THREADS=10   # see step 01's performance note on --threads/THREADS
+make validate-samples LOCAL_NAME_RATIO=0.2   # keep 20% local names instead of 10%
 ```
 
 ---
 
 ## Step 03 — Generate NL questions, FR + EN (`scripts/03_generate_questions.py`)
 
-Fills hand-written phrase templates per relation type with each validated pair's real values, deduplicates exact `(question, sql)` pairs, and (optionally) caps pairs per template so no single relation type dominates. Output: the final `{question, sql}` dataset, `data/samples/dataset.jsonl`.
+Fills hand-written phrase templates per relation type with each validated pair's real values — only in that row's `lang`, since its name and SQL are already language-specific (step 02) — deduplicates exact `(question, sql)` pairs, and (optionally) caps pairs per template so no single relation type dominates. Output: the final `{question, sql}` dataset, `data/samples/dataset.jsonl`.
 
 ```bash
 make generate-questions
 make generate-questions MAX_PER_TEMPLATE=5000   # cap pairs per template (useful at ROWS=70000 scale)
 ```
 
+⚠️ **TODO (next step):** FR phrasings have no article before country/region names ("où se trouve Espagne" instead of "l'Espagne", "frontalières de Maroc" instead of "du Maroc") — see the TODO in `03_generate_questions.py`.
+
 ---
 
 ## Step 04 — Split into train/val (`scripts/04_split_train_val.py`)
 
-Splits `dataset.jsonl` into train/val sets, stratified by template so a low-volume template (e.g. `bordering`) doesn't end up entirely absent from validation. The split is done **per SQL query**: all the questions (FR, EN, other phrasings) of a given SQL go to the same side, so no val SQL was seen in training. `VAL_RATIO` is therefore a fraction of distinct SQL queries per template, not of pairs (`FINETUNING.md` §1c).
+Splits `dataset.jsonl` into train/val sets, stratified by template so a low-volume template (e.g. `bordering`) doesn't end up entirely absent from validation. The split is done **per sampled entity**: all the questions of an entity (FR and EN, every phrasing) go to the same side, even though its FR and EN SQL differ ("Espagne" vs "Spain", see step 02) — otherwise the model would have seen the same query, just with the other language's name, in training. Entities that produced an identical SQL (same place sampled twice) are grouped together too. `VAL_RATIO` is therefore a fraction of entities per template, not of pairs (`FINETUNING.md` §1c). The script warns if `val.jsonl` comes out empty or if a template has a single entity (entirely in train) — typically a too-small `ROWS`.
 
 ```bash
 make split-dataset

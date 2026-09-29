@@ -82,6 +82,12 @@ DIRECTION_FR = {"north": "au nord", "south": "au sud", "east": "à l'est", "west
 # "de"/"du"/"de la" agreement with the place name's gender can't be determined from
 # data alone — "de" is used uniformly, which reads slightly informally in French
 # but is unambiguous and never grammatically wrong the way "du"/"de la" could be.
+# TODO (next step): same issue for the article before the place itself. Since FR
+# questions use exonyms (02_fill_and_validate.py), countries/regions now read
+# "où se trouve Espagne" / "villes frontalières de Maroc" instead of "l'Espagne" /
+# "du Maroc". Cities take no article ("à Lyon"), countries/regions do, with gender
+# and elision (le Maroc, la France, l'Espagne, les Pays-Bas) — needs the division
+# subtype carried through to here, plus a small gender table for countries/regions.
 
 PHRASES = {
     "containment": {
@@ -176,8 +182,12 @@ def format_distance(meters: float) -> tuple[str, str]:
     return f"{m_str}m", f"{m_str}m"
 
 
-def build_questions(template: str, params: dict) -> list[str]:
-    """Returns a flat list of NL question strings (EN + FR) for one validated pair."""
+def build_questions(template: str, params: dict, lang: str) -> list[str]:
+    """Returns the NL question strings in `lang` ("en" or "fr") for one validated pair.
+
+    One language only: 02_fill_and_validate.py writes one row per (entity, language),
+    whose `place`/`feature` is already the name a user of that language would type
+    ("Espagne" vs "Spain"), and whose SQL matches on that same name."""
     category_en, category_fr = category_labels(params)
     fields_en = {"category": category_en}
     fields_fr = {"category": category_fr}
@@ -204,10 +214,8 @@ def build_questions(template: str, params: dict) -> list[str]:
         fields_en["side"] = params["side"]
         fields_fr["side_fr"] = SIDE_FR[params["side"]]
 
-    phrases = PHRASES[template]
-    questions = [p.format(**fields_en) for p in phrases["en"]]
-    questions += [p.format(**fields_fr) for p in phrases["fr"]]
-    return questions
+    fields = fields_en if lang == "en" else fields_fr
+    return [p.format(**fields) for p in PHRASES[template][lang]]
 
 
 def main() -> None:
@@ -231,7 +239,7 @@ def main() -> None:
     with open(args.in_path, encoding="utf-8") as fin:
         for line in fin:
             row = json.loads(line)
-            for question in build_questions(row["template"], row["params"]):
+            for question in build_questions(row["template"], row["params"], row["lang"]):
                 pair = (question, row["sql"])
                 if pair in seen:
                     duplicates += 1

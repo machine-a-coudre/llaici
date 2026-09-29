@@ -50,7 +50,7 @@ merge-samples:
 # STEP 4: fill templates with sampled entities and validate by execution (see scripts/02_fill_and_validate.py)
 validate-samples:
 	$(PRINT_THREADS)
-	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated_samples.jsonl --threads $(THREADS)
+	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated_samples.jsonl --threads $(THREADS) $(if $(LOCAL_NAME_RATIO),--local-name-ratio $(LOCAL_NAME_RATIO))
 
 # STEP 4: generate NL question formulations (FR+EN) for validated pairs -> dataset.jsonl (see scripts/03_generate_questions.py)
 generate-questions:

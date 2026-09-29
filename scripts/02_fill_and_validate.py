@@ -8,9 +8,22 @@ that return a non-empty result (DESIGN.md STEP 4: "Empty result -> discard the p
 
 Not implemented here (later STEP 4 sub-steps, see DESIGN.md): generating NL question
 formulations, deduplication/balancing, or writing the final dataset.jsonl. This
-script's output is {template, params, sql, country} per validated row — the
-geometric result itself is never kept (DESIGN.md: "used only for validation, NEVER
-included in the dataset").
+script's output is {template, params, sql, country, lang, entity} per validated row
+— the geometric result itself is never kept (DESIGN.md: "used only for validation,
+NEVER included in the dataset").
+
+One output row per language (FR, EN) per sampled entity, each with its own SQL:
+the samplers return Overture's `names.primary`, the *local* name ("España", or
+"Maroc ⵍⵎⵖⵔⵉⴱ المغرب" — Morocco's primary name carries all three official scripts),
+but a French user types "Espagne" and an English one "Spain", and the SQL must
+contain the term the user actually typed. So each entity's name is resolved to its
+`name_fr` / `name_en` exonym (`resolve_names()`, one batched lookup per reference
+table) and the template is filled once per language (`pick_name()`). A fraction
+(--local-name-ratio, default 10%) keeps the local name instead, since some users
+do type "España". Non-Latin names are never used (nobody types "المغرب" into a
+FR/EN question); an entity with no usable name in a language gets no row for it.
+`entity` (the input line number) ties an entity's FR and EN rows together so the
+train/val split (04_split_train_val.py) keeps them on the same side.
 
 Since sampling is join-driven (every sampled row already comes from a real match),
 validated pairs are expected to be ~100% of input rows — this step is a safety net
@@ -25,7 +38,9 @@ Run:
 
 import argparse
 import json
+import random
 import sys
+import unicodedata
 
 import duckdb
 
@@ -401,6 +416,66 @@ BUILDERS = {
 }
 
 
+# Table each template's reference name (`place`, or `feature` for rivers) was sampled
+# from in 01_sample_entities.py — where its name_fr / name_en are looked up.
+REF_TABLE = {
+    "containment": "division_areas",
+    "center": "division_areas",
+    "periphery": "division_areas",
+    "places_containment": "division_areas",
+    "bordering": "division_areas",
+    "proximity": "divisions",
+    "direction": "divisions",
+    "direction_distance": "divisions",
+    "places_proximity": "divisions",
+    "city_direction": "divisions",
+    "city_direction_distance": "divisions",
+    "show_division": "divisions",
+    "along": "water",
+    "left_right_bank": "water",
+    "area_distance": "water",
+}
+LANGS = ("fr", "en")
+
+
+def name_param(params: dict) -> str:
+    return "feature" if "feature" in params else "place"
+
+
+def resolve_names(con: duckdb.DuckDBPyConnection, rows: list[dict]) -> dict[tuple[str, str], dict[str, str | None]]:
+    """(table, primary name) -> {"fr": name_fr, "en": name_en}, one query per table.
+
+    Keyed by primary name, not id (the samplers don't return ids): several entities
+    can share a primary name, but they share its exonym too in practice, and
+    `any_value` skips NULLs so one row with a name_fr is enough.
+    """
+    by_table: dict[str, set[str]] = {}
+    for row in rows:
+        by_table.setdefault(REF_TABLE[row["template"]], set()).add(row[name_param(row)])
+    names = {}
+    for table, primaries in by_table.items():
+        for primary, fr, en in con.execute(
+            f"SELECT name, any_value(name_fr), any_value(name_en) FROM {table} WHERE name IN (SELECT unnest(?)) GROUP BY name",
+            [sorted(primaries)],
+        ).fetchall():
+            names[(table, primary)] = {"fr": fr, "en": en}
+    return names
+
+
+def is_latin(name: str | None) -> bool:
+    return bool(name) and all(
+        unicodedata.name(ch, "").startswith("LATIN") for ch in name if ch.isalpha()
+    )
+
+
+def pick_name(local: str, exonym: str | None, use_local: bool) -> str | None:
+    """The name a user would type: the exonym, or the local name for the
+    --local-name-ratio share (or when there's no exonym) — whichever preferred one
+    is usable (Latin script), else the other, else None."""
+    order = [local, exonym] if use_local else [exonym, local]
+    return next((n for n in order if is_latin(n)), None)
+
+
 def normalize_sql(sql: str) -> str:
     """Collapse the builder functions' multi-line/indented SQL into a single line."""
     return " ".join(sql.split())
@@ -428,38 +503,70 @@ def main() -> None:
         help="DuckDB SET threads=N (default 2, kept low on purpose); tune to roughly "
         "the machine's CPU core count for a faster large run (e.g. --threads 10)",
     )
+    parser.add_argument(
+        "--local-name-ratio",
+        type=float,
+        default=0.1,
+        help="share of (entity, language) rows keeping the local name (e.g. 'España') "
+        "instead of the FR/EN exonym ('Espagne'/'Spain') — see module docstring",
+    )
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     con = connect(args.threads)
-    kept, discarded, errors = 0, 0, 0
+    rng = random.Random(args.seed)
+    kept, discarded, errors, no_name = 0, 0, 0, 0
 
-    with open(args.in_path, encoding="utf-8") as fin, open(args.out_path, "w", encoding="utf-8") as fout:
-        for line in fin:
-            row = json.loads(line)
+    with open(args.in_path, encoding="utf-8") as fin:
+        entities = [json.loads(line) for line in fin]
+    names = resolve_names(con, entities)
+
+    with open(args.out_path, "w", encoding="utf-8") as fout:
+        for entity, row in enumerate(entities):
             template = row["template"]
-            params = {k: v for k, v in row.items() if k not in ("template", "country")}
-            sql = BUILDERS[template](params).strip()
+            base_params = {k: v for k, v in row.items() if k not in ("template", "country")}
+            key = name_param(base_params)
+            local = base_params[key]
+            exonyms = names.get((REF_TABLE[template], local), {})
+            # FR and EN often resolve to the same name (small towns have no exonym):
+            # executed once, cached per name.
+            results: dict[str, tuple[str, bool] | None] = {}
+            for lang in LANGS:
+                name = pick_name(local, exonyms.get(lang), rng.random() < args.local_name_ratio)
+                if name is None:
+                    no_name += 1
+                    continue
+                params = {**base_params, key: name}
+                if name not in results:
+                    sql = BUILDERS[template](params).strip()
+                    try:
+                        results[name] = (sql, con.execute(sql).fetchone() is not None)
+                    except duckdb.Error as e:
+                        errors += 1
+                        results[name] = None
+                        print(f"# ERROR ({template}, {name}): {e}", file=sys.stderr)
+                if results[name] is None:
+                    continue
+                sql, non_empty = results[name]
+                if not non_empty:
+                    discarded += 1
+                    continue
 
-            try:
-                result = con.execute(sql).fetchone()
-            except duckdb.Error as e:
-                errors += 1
-                print(f"# ERROR ({template}, {row.get('place') or row.get('feature')}): {e}", file=sys.stderr)
-                continue
+                kept += 1
+                fout.write(json.dumps({
+                    "template": template,
+                    "params": params,
+                    "sql": normalize_sql(sql),
+                    "country": row.get("country"),
+                    "lang": lang,
+                    "entity": entity,
+                }, ensure_ascii=False) + "\n")
 
-            if result is None:
-                discarded += 1
-                continue
-
-            kept += 1
-            fout.write(json.dumps({
-                "template": template,
-                "params": params,
-                "sql": normalize_sql(sql),
-                "country": row.get("country"),
-            }, ensure_ascii=False) + "\n")
-
-    print(f"# kept: {kept}, discarded (empty result): {discarded}, errors: {errors}", file=sys.stderr)
+    print(
+        f"# kept: {kept}, discarded (empty result): {discarded}, errors: {errors}, "
+        f"no usable (Latin-script) name: {no_name} — counts are per (entity, language)",
+        file=sys.stderr,
+    )
     print(f"# written to {args.out_path}", file=sys.stderr)
 
 
