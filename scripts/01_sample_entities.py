@@ -10,6 +10,18 @@ Not implemented here (later STEP 4 sub-steps, see DESIGN.md): filling the SQL te
 strings, generating NL question formulations, deduplication/balancing, or writing
 dataset.jsonl. This script only prints sampled parameter sets as JSON lines.
 
+Output layout: each template samples into its own `entities_<name>.jsonl` file
+(`per_template_path()`), never straight into the final `--out` (`entities.jsonl`).
+Regenerating a single template (`--template along`) only ever overwrites
+`entities_along.jsonl` — it never touches `entities.jsonl`, so a previous full run's
+merged file stays intact. `entities.jsonl` is (re)built by merging every template's
+own file (`merge_entities()`), which happens automatically after a `--template all`
+run, or on demand via `--template merge` (skips sampling entirely, just concatenates
+whatever per-template files already exist — e.g. after regenerating one template).
+Either merge path prompts for confirmation before overwriting an existing
+`entities.jsonl` (a merge replaces its content, not an append) — pass `--yes` to
+skip that prompt for scripted/CI use.
+
 Sampling strategy (see DESIGN.md STEP 4 "Decisions"):
 - join-driven: every parameter set comes from a real spatial join (e.g. a real bus
   stop that is really within a real city's polygon), not from randomly guessing a
@@ -35,10 +47,11 @@ Sampling strategy (see DESIGN.md STEP 4 "Decisions"):
   of what DuckDB is doing internally. A killed or otherwise-failing attempt is
   counted as a miss like any other.
 
-Run (or via `make sample-entities ROWS=100`, see Makefile):
+Run (or via `make sample-entities ROWS=100` / `make merge-samples`, see Makefile):
     uvx --with duckdb python3 scripts/01_sample_entities.py --rows 100
     uvx --with duckdb python3 scripts/01_sample_entities.py --rows 70000 --out data/samples/entities.jsonl
-    uvx --with duckdb python3 scripts/01_sample_entities.py --template along --rows 20
+    uvx --with duckdb python3 scripts/01_sample_entities.py --template along --rows 20   # only entities_along.jsonl
+    uvx --with duckdb python3 scripts/01_sample_entities.py --template merge             # rebuild entities.jsonl only
 """
 
 import argparse
@@ -115,6 +128,54 @@ def attempt_with_hard_timeout(template_name: str, countries: list[tuple[str, str
         return q.get_nowait()
     except Exception:
         return None
+
+
+def per_template_path(out_path: Path, name: str) -> Path:
+    """`data/samples/entities.jsonl` + template "along" -> `data/samples/entities_along.jsonl`.
+
+    Sampling writes here per template (never straight to `out_path`) so re-running
+    a single `--template` only ever touches that one template's own file — it can't
+    accidentally clobber the merged `entities.jsonl` other templates' rows live in.
+    """
+    return out_path.with_name(f"{out_path.stem}_{name}{out_path.suffix}")
+
+
+def confirm_overwrite(path: Path, skip_confirm: bool) -> bool:
+    """Asks before merge_entities() truncates an existing `path`, since a merge
+    fully replaces its previous content (not an append) — see the module's
+    `--template merge` docs. Returns True if it's fine to proceed.
+
+    `skip_confirm` (--yes) bypasses the prompt for scripted/CI use (the Makefile's
+    full-pipeline targets pass it); without a real terminal to prompt on, an
+    EOFError from `input()` is treated as "no" rather than hanging or guessing.
+    """
+    if not path.exists() or skip_confirm:
+        return True
+    print(f"\033[1;33m⚠  {path} already exists and will be overwritten by this merge.\033[0m", file=sys.stderr)
+    try:
+        answer = input("Overwrite it? [y/N]: ").strip().lower()
+    except EOFError:
+        print("# no input available (non-interactive?) — pass --yes to skip this prompt", file=sys.stderr)
+        return False
+    return answer in ("y", "yes")
+
+
+def merge_entities(out_path: Path, template_names: list[str]) -> int:
+    """Concatenates every template's own `entities_<name>.jsonl` into `out_path`, in
+    `template_names` order. A missing part file is skipped with a warning (e.g. a
+    template that was never sampled yet) rather than aborting the whole merge."""
+    total = 0
+    with out_path.open("w", encoding="utf-8") as fout:
+        for name in template_names:
+            part_path = per_template_path(out_path, name)
+            if not part_path.exists():
+                print(f"# WARNING: {part_path} not found, skipping (run --template {name} first)", file=sys.stderr)
+                continue
+            with part_path.open(encoding="utf-8") as fin:
+                for line in fin:
+                    fout.write(line)
+                    total += 1
+    return total
 
 
 def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
@@ -673,9 +734,16 @@ SAMPLERS = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--template", choices=[*SAMPLERS, "all"], default="all")
+    parser.add_argument(
+        "--template",
+        choices=[*SAMPLERS, "all", "merge"],
+        default="all",
+        help="one template name (regenerates only that template's own file), "
+        "'all' (regenerates every template's file, then merges them), or "
+        "'merge' (merges existing per-template files as-is, samples nothing)",
+    )
     parser.add_argument("--rows", type=int, default=100, help="total sample rows to produce, split evenly across templates")
-    parser.add_argument("--out", default="data/samples/entities.jsonl", help="output JSONL file")
+    parser.add_argument("--out", default="data/samples/entities.jsonl", help="final merged JSONL file")
     parser.add_argument(
         "--max-attempts-factor",
         type=int,
@@ -689,7 +757,24 @@ def main() -> None:
         help="DuckDB SET threads=N per connection (default 2, kept low on purpose — see connect()); "
         "tune to roughly the machine's CPU core count for a faster large run (e.g. --threads 10)",
     )
+    parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="don't ask for confirmation before a merge overwrites an existing entities.jsonl",
+    )
     args = parser.parse_args()
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 'merge' only ever reads existing entities_<name>.jsonl files and concatenates
+    # them — no sampling, no DB connection needed at all.
+    if args.template == "merge":
+        if not confirm_overwrite(out_path, args.yes):
+            sys.exit(f"# merge aborted, {out_path} left untouched")
+        total = merge_entities(out_path, list(SAMPLERS))
+        print(f"# merged {total} rows into {out_path}", file=sys.stderr)
+        return
 
     templates = list(SAMPLERS) if args.template == "all" else [args.template]
     target_per_template = max(1, args.rows // len(templates))
@@ -697,9 +782,8 @@ def main() -> None:
     # Fail fast: attempt_with_hard_timeout() counts any worker error as a miss, so a
     # connection problem that can never resolve itself (DB locked by the `duckdb`
     # container, missing extension, ...) would otherwise spin up thousands of doomed
-    # attempts. Checked before opening --out so an existing output isn't truncated.
-    # Also fetches the country list once here (see fetch_countries()) rather than
-    # opening a second connection just for that.
+    # attempts. Also fetches the country list once here (see fetch_countries())
+    # rather than opening a second connection just for that.
     try:
         con = connect(args.threads)
         countries = fetch_countries(con)
@@ -709,14 +793,21 @@ def main() -> None:
     if not countries:
         sys.exit("# no country found in division_areas")
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Ask before, not after, sampling everything: aborting post-hoc would waste a
+    # potentially long `--template all` run just to then refuse the merge at the end.
+    if args.template == "all" and not confirm_overwrite(out_path, args.yes):
+        sys.exit(f"# aborted, {out_path} left untouched (per-template files would still be (re)written — rerun with --yes, or a single --template, to proceed)")
 
+    # Each template writes only to its own entities_<name>.jsonl (see per_template_path())
+    # — regenerating one template (`--template along`) never touches `out_path` itself,
+    # so the merged entities.jsonl from a previous full run stays intact until an
+    # explicit merge (below, or `--template merge`) rebuilds it.
     total_hits = 0
-    with out_path.open("w", encoding="utf-8") as f:
-        for name in templates:
-            hits, attempts = 0, 0
-            max_attempts = target_per_template * args.max_attempts_factor
+    for name in templates:
+        part_path = per_template_path(out_path, name)
+        hits, attempts = 0, 0
+        max_attempts = target_per_template * args.max_attempts_factor
+        with part_path.open("w", encoding="utf-8") as f:
             while hits < target_per_template and attempts < max_attempts:
                 attempts += 1
                 result = attempt_with_hard_timeout(name, countries, args.threads)
@@ -725,9 +816,17 @@ def main() -> None:
                 hits += 1
                 total_hits += 1
                 f.write(json.dumps(result, ensure_ascii=False) + "\n")
-            print(f"# {name}: {hits}/{target_per_template} sampled ({attempts} attempts)", file=sys.stderr)
+        print(f"# {name}: {hits}/{target_per_template} sampled ({attempts} attempts) -> {part_path}", file=sys.stderr)
 
-    print(f"# total: {total_hits} rows written to {out_path}", file=sys.stderr)
+    if args.template == "all":
+        merged = merge_entities(out_path, list(SAMPLERS))
+        print(f"# merged {merged} rows into {out_path}", file=sys.stderr)
+    else:
+        print(
+            f"# total: {total_hits} rows written to {per_template_path(out_path, templates[0])} "
+            f"({out_path} left untouched — run with --template all or --template merge to rebuild it)",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

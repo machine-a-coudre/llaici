@@ -59,17 +59,37 @@ Only `data/` and `scripts/` are bind-mounted into the container (at `/app/data` 
 
 ## Step 01 — Sample entities (`scripts/01_sample_entities.py`)
 
-Draws real, join-valid parameter sets from the DuckDB views to fill the SQL templates in `TEMPLATES.md` (see `DESIGN.md` STEP 4). Output: `data/samples/entities.jsonl`.
+Draws real, join-valid parameter sets from the DuckDB views to fill the SQL templates in `TEMPLATES.md` (see `DESIGN.md` STEP 4). Each template samples into its **own** file, `data/samples/entities_<name>.jsonl` (e.g. `entities_along.jsonl`, `entities_center.jsonl`) — never straight into the final `entities.jsonl`. With the default `TEMPLATE=all`, every template's file is (re)generated and then merged into `data/samples/entities.jsonl`.
 
 ```bash
-make sample-entities ROWS=100      # quick test batch
-make sample-entities ROWS=70000    # full batch for training
+make sample-entities ROWS=100      # quick test batch, all templates
+make sample-entities ROWS=70000    # full batch for training, all templates
 make sample-entities ROWS=70000 THREADS=10   # same, on a machine with CPU cores to spare
 ```
 
 - `ROWS` — total sample rows across all templates (split evenly); defaults to 100 if omitted.
 - Each sampling attempt runs in its own subprocess with a hard timeout (see the script's "per-attempt timeout" note) — a rare attempt that hangs is killed automatically after a few seconds and counted as a miss, rather than blocking the run.
 - **Performance note**: both this script and step 02 default to `SET threads=2` (see `connect()` in each), deliberately low to stay light — overridable with `--threads`/`THREADS=` (both scripts, plus step 07). More RAM does **not** speed this up — DuckDB won't use more CPU cores than this setting regardless of available memory. **The right value depends on how many CPU cores the machine actually has** — pick a `--threads` value at or below that count (e.g. `THREADS=10` on a 10+ core machine); setting it higher than the core count doesn't help and can add contention.
+
+### Regenerating a single template
+
+Useful after tweaking one template's SQL or sampler (`TEMPLATES.md`) without waiting on a full re-run of every other template:
+
+```bash
+make sample-entities TEMPLATE=along ROWS=500   # regenerates only entities_along.jsonl
+make merge-samples                             # rebuilds entities.jsonl from every entities_<name>.jsonl as-is
+```
+
+`TEMPLATE=<name>` (one of the `SAMPLERS` keys in `scripts/01_sample_entities.py`, e.g. `along`, `center`, `bordering`, `show_division`...) only ever overwrites that one template's own file — `entities.jsonl` is **left untouched** until an explicit merge. `make merge-samples` (`--template merge`) does that merge on its own, with no resampling — it just concatenates whichever `entities_<name>.jsonl` files already exist, in a fixed order, warning (not failing) about any that are missing.
+
+A merge fully **replaces** `entities.jsonl`'s content (it's not an append), so both merge paths (`--template merge` and the automatic one after `--template all`) ask for confirmation first if the file already exists:
+
+```
+⚠  data/samples/entities.jsonl already exists and will be overwritten by this merge.
+Overwrite it? [y/N]:
+```
+
+Pass `--yes`/`-y` to skip the prompt (e.g. for scripted/CI use) — the `sample-entities`/`generate-dataset` `make` targets already do this, since they're meant to run unattended; `make merge-samples` does not, so it always prompts.
 
 ---
 

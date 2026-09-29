@@ -3,6 +3,7 @@ PARQUET_DIR := data/parquet
 SAMPLES_DIR := data/samples
 ROWS ?= 100
 THREADS ?= 2
+TEMPLATE ?= all
 
 # Nice, hard-to-miss reminder shown before every DuckDB-backed script launch (see
 # sample-entities/validate-samples/evaluate below): the default is intentionally
@@ -19,7 +20,7 @@ FINETUNE_PY := $(FINETUNE_VENV)/bin/python
 # which Unsloth needs, so cu130 is the newest usable one (-> torch 2.12).
 TORCH_BACKEND ?= cu130
 
-.PHONY: download-overture download-overture-places up build-up down sample-entities validate-samples generate-questions split-dataset format-for-training generate-dataset finetune-venv finetune finetune-mlx evaluate merge-and-quantize merge-and-quantize-mlx finetune-pipeline-cuda finetune-pipeline-mlx app-up app-build-up app-down
+.PHONY: download-overture download-overture-places up build-up down sample-entities merge-samples validate-samples generate-questions split-dataset format-for-training generate-dataset finetune-venv finetune finetune-mlx evaluate merge-and-quantize merge-and-quantize-mlx finetune-pipeline-cuda finetune-pipeline-mlx app-up app-build-up app-down
 
 download-overture:
 	mkdir -p $(PARQUET_DIR)
@@ -29,11 +30,22 @@ download-overture:
 	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
 	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
 
-# STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Example: make sample-entities ROWS=70000 THREADS=10
+# STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Each template samples into its own
+# entities_<name>.jsonl (see scripts/01_sample_entities.py); with the default
+# TEMPLATE=all, entities.jsonl is then rebuilt by merging all of them.
+# Examples:
+#   make sample-entities ROWS=70000 THREADS=10       # regenerate + merge everything
+#   make sample-entities TEMPLATE=along ROWS=500     # regenerate only entities_along.jsonl
+#                                                     # (entities.jsonl is left untouched — see `merge-samples`)
 sample-entities:
 	mkdir -p $(SAMPLES_DIR)
 	$(PRINT_THREADS)
-	uvx --with duckdb python3 scripts/01_sample_entities.py --rows $(ROWS) --threads $(THREADS) --out $(SAMPLES_DIR)/entities.jsonl
+	uvx --with duckdb python3 scripts/01_sample_entities.py --rows $(ROWS) --threads $(THREADS) --template $(TEMPLATE) --out $(SAMPLES_DIR)/entities.jsonl --yes
+
+# STEP 4: rebuild entities.jsonl by merging every entities_<name>.jsonl as-is, with
+# no resampling — e.g. after `make sample-entities TEMPLATE=along` above.
+merge-samples:
+	uvx --with duckdb python3 scripts/01_sample_entities.py --template merge --out $(SAMPLES_DIR)/entities.jsonl
 
 # STEP 4: fill templates with sampled entities and validate by execution (see scripts/02_fill_and_validate.py)
 validate-samples:
