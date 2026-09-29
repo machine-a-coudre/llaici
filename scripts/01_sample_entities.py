@@ -80,16 +80,16 @@ def connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _attempt_worker(template_name: str, q: "multiprocessing.Queue") -> None:
+def _attempt_worker(template_name: str, countries: list[tuple[str, str]], q: "multiprocessing.Queue") -> None:
     con = connect()
-    country_id, country_name = pick_country(con)
+    country_id, country_name = random.choice(countries)
     result = SAMPLERS[template_name](con, country_id)
     if result is not None:
         result["country"] = country_name
     q.put(result)
 
 
-def attempt_with_hard_timeout(template_name: str) -> dict | None:
+def attempt_with_hard_timeout(template_name: str, countries: list[tuple[str, str]]) -> dict | None:
     """Run one full attempt (pick a country, run the sampler) in its own process,
     killed after QUERY_TIMEOUT_S if it hasn't returned.
 
@@ -103,7 +103,7 @@ def attempt_with_hard_timeout(template_name: str) -> dict | None:
     A timed-out or otherwise-failing attempt returns None (counted as a miss).
     """
     q: multiprocessing.Queue = multiprocessing.Queue()
-    p = multiprocessing.Process(target=_attempt_worker, args=(template_name, q))
+    p = multiprocessing.Process(target=_attempt_worker, args=(template_name, countries, q))
     p.start()
     p.join(QUERY_TIMEOUT_S)
     if p.is_alive():
@@ -116,19 +116,18 @@ def attempt_with_hard_timeout(template_name: str) -> dict | None:
         return None
 
 
-def pick_country(con: duckdb.DuckDBPyConnection) -> tuple[str, str]:
-    """Pick one random country. Returns (division_areas.id, name)."""
-    row = con.execute(
-        """
-        SELECT id, name
-        FROM division_areas
-        WHERE subtype = 'country'
-        ORDER BY random() LIMIT 1
-        """
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("No country found in division_areas")
-    return row
+def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
+    """Fetches every (division_areas.id, name) with subtype='country' once, up front.
+
+    Every attempt used to re-run `ORDER BY random() LIMIT 1` on this table itself
+    (in `pick_country()`, now removed) — cheap per call on its own, but each attempt
+    already pays for spawning a fresh subprocess and DuckDB connection (see
+    `attempt_with_hard_timeout`), so across a `ROWS=70000` run that's thousands of
+    redundant queries (plus a sort) for a result set that never changes. Fetching
+    once and picking with `random.choice()` in Python moves the randomness out of
+    SQL entirely — same distribution, one query total instead of one per attempt.
+    """
+    return con.execute("SELECT id, name FROM division_areas WHERE subtype = 'country'").fetchall()
 
 
 # ── Template 1: Containment ─────────────────────────────────────────────────
@@ -691,10 +690,16 @@ def main() -> None:
     # connection problem that can never resolve itself (DB locked by the `duckdb`
     # container, missing extension, ...) would otherwise spin up thousands of doomed
     # attempts. Checked before opening --out so an existing output isn't truncated.
+    # Also fetches the country list once here (see fetch_countries()) rather than
+    # opening a second connection just for that.
     try:
-        connect().close()
+        con = connect()
+        countries = fetch_countries(con)
+        con.close()
     except duckdb.Error as e:
         sys.exit(f"# cannot open {DB_PATH}: {e}\n# (DB locked? stop the container: docker compose stop duckdb)")
+    if not countries:
+        sys.exit("# no country found in division_areas")
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -706,7 +711,7 @@ def main() -> None:
             max_attempts = target_per_template * args.max_attempts_factor
             while hits < target_per_template and attempts < max_attempts:
                 attempts += 1
-                result = attempt_with_hard_timeout(name)
+                result = attempt_with_hard_timeout(name, countries)
                 if result is None:
                     continue
                 hits += 1
