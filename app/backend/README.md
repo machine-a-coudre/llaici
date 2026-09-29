@@ -32,6 +32,7 @@ Environment variables (all optional, see `app/config.py`):
 | `LLAMA_SERVER_URL` | `http://localhost:8080/v1` | llama-server's OpenAI-compatible endpoint |
 | `LLAICI_MODEL_NAME` | `llaici-qwen3-0.6b` | Sent to the OpenAI client; llama-server ignores it (serves whichever GGUF it was started with) |
 | `LLAICI_DB_PATH` | `data/db/llaici.duckdb` | Path to the DuckDB file, relative to the process's working directory |
+| `LLAICI_DB_THREADS` | `2` | DuckDB `SET threads=N` per connection — kept low by default, raise it up to roughly the host's CPU core count for lower query latency |
 
 ## API
 

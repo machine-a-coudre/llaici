@@ -45,11 +45,11 @@ DEFAULT_SYSTEM = (
 )
 
 
-def connect():
+def connect(threads: int = 2):
     import duckdb
 
     con = duckdb.connect(DB_PATH, read_only=True)
-    con.execute("SET threads=2")  # see scripts/01_sample_entities.py's connect() note
+    con.execute(f"SET threads={threads}")  # see scripts/01_sample_entities.py's connect() note
     con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
@@ -105,6 +105,13 @@ def main() -> None:
     parser.add_argument("--out", default="data/samples/eval_results.jsonl")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=2,
+        help="DuckDB SET threads=N (default 2, kept low on purpose); tune to roughly "
+        "the machine's CPU core count for a faster large run (e.g. --threads 10)",
+    )
     args = parser.parse_args()
 
     from unsloth import FastLanguageModel
@@ -119,7 +126,7 @@ def main() -> None:
     model.load_adapter(args.adapter_dir)
     FastLanguageModel.for_inference(model)
 
-    con = connect()
+    con = connect(args.threads)
 
     counts = {"syntax_error": 0, "empty": 0, "ok_mismatch": 0, "ok_match": 0}
     with open(args.val_file, encoding="utf-8") as fin, open(args.out, "w", encoding="utf-8") as fout:

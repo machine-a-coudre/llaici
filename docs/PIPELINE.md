@@ -64,11 +64,12 @@ Draws real, join-valid parameter sets from the DuckDB views to fill the SQL temp
 ```bash
 make sample-entities ROWS=100      # quick test batch
 make sample-entities ROWS=70000    # full batch for training
+make sample-entities ROWS=70000 THREADS=10   # same, on a machine with CPU cores to spare
 ```
 
 - `ROWS` — total sample rows across all templates (split evenly); defaults to 100 if omitted.
 - Each sampling attempt runs in its own subprocess with a hard timeout (see the script's "per-attempt timeout" note) — a rare attempt that hangs is killed automatically after a few seconds and counted as a miss, rather than blocking the run.
-- **Performance note**: both this script and step 02 hardcode `SET threads=2` (see `connect()` in each), deliberately low to stay light. More RAM does **not** speed this up — DuckDB won't use more CPU cores than this setting regardless of available memory. If running a large batch (e.g. `ROWS=70000`) on a machine with more CPU cores to spare, raising this value is the actual lever for speed.
+- **Performance note**: both this script and step 02 default to `SET threads=2` (see `connect()` in each), deliberately low to stay light — overridable with `--threads`/`THREADS=` (both scripts, plus step 07). More RAM does **not** speed this up — DuckDB won't use more CPU cores than this setting regardless of available memory. **The right value depends on how many CPU cores the machine actually has** — pick a `--threads` value at or below that count (e.g. `THREADS=10` on a 10+ core machine); setting it higher than the core count doesn't help and can add contention.
 
 ---
 
@@ -78,6 +79,7 @@ Fills each sampled row's matching SQL template (see `TEMPLATES.md`) with its rea
 
 ```bash
 make validate-samples
+make validate-samples THREADS=10   # see step 01's performance note on --threads/THREADS
 ```
 
 ---
@@ -134,6 +136,7 @@ Saves a LoRA adapter to `models/llaici-qwen3-0.6b-lora/` — merging into the ba
 
 ```bash
 make evaluate
+make evaluate THREADS=10   # see step 01's performance note on --threads/THREADS
 ```
 
 Writes per-example detail (question, gold SQL, generated SQL, outcome) to `data/samples/eval_results.jsonl`, plus a summary: % syntax errors, % empty results, % that ran but returned the wrong rows, % exact match with the gold query's result.

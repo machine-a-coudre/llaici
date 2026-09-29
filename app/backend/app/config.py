@@ -19,3 +19,8 @@ MODEL_NAME = os.environ.get("LLAICI_MODEL_NAME", "llaici-qwen3-0.6b")
 # Same relative path convention as scripts/01-05 (DB_PATH = "data/db/llaici.duckdb"):
 # assumes the process is started from the repo root.
 DB_PATH = os.environ.get("LLAICI_DB_PATH", "data/db/llaici.duckdb")
+
+# Same "SET threads=N" knob as scripts/01_sample_entities.py's --threads (default
+# kept low on purpose) — raise it up to roughly the host's CPU core count if query
+# latency matters more than staying light on a shared/constrained machine.
+DB_THREADS = int(os.environ.get("LLAICI_DB_THREADS", "2"))

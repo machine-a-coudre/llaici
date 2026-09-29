@@ -406,12 +406,12 @@ def normalize_sql(sql: str) -> str:
     return " ".join(sql.split())
 
 
-def connect() -> duckdb.DuckDBPyConnection:
+def connect(threads: int = 2) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(DB_PATH, read_only=True)
-    # Hardcoded low on purpose, to stay light on the user's machine — see the same
+    # Default low on purpose, to stay light on the user's machine — see the same
     # note in sample_entities.py's connect(). More RAM doesn't speed this up; more
-    # CPU cores (and raising this value) would.
-    con.execute("SET threads=2")
+    # CPU cores (and raising --threads, up to roughly the machine's core count) would.
+    con.execute(f"SET threads={threads}")
     con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
@@ -421,9 +421,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--in", dest="in_path", default="data/samples/entities.jsonl")
     parser.add_argument("--out", dest="out_path", default="data/samples/validated.jsonl")
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=2,
+        help="DuckDB SET threads=N (default 2, kept low on purpose); tune to roughly "
+        "the machine's CPU core count for a faster large run (e.g. --threads 10)",
+    )
     args = parser.parse_args()
 
-    con = connect()
+    con = connect(args.threads)
     kept, discarded, errors = 0, 0, 0
 
     with open(args.in_path, encoding="utf-8") as fin, open(args.out_path, "w", encoding="utf-8") as fout:

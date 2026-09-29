@@ -67,21 +67,22 @@ BBOX_SQL = """
 """
 
 
-def connect() -> duckdb.DuckDBPyConnection:
+def connect(threads: int = 2) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(DB_PATH, read_only=True)
-    # Hardcoded low on purpose, to stay light on the user's machine (see chat history
+    # Defaults low on purpose, to stay light on the user's machine (see chat history
     # around the OOM/hang incidents this script went through). This — not RAM — is
     # the main lever for speed: DuckDB won't use more CPU cores than this regardless
-    # of available memory. Raise it if more CPU cores are available and speed matters
-    # more than staying light (e.g. for a real ROWS=70000 run on a beefier machine).
-    con.execute("SET threads=2")
+    # of available memory. Raise it (--threads) up to roughly the machine's CPU core
+    # count if more cores are available and speed matters more than staying light
+    # (e.g. for a real ROWS=70000 run on a beefier machine).
+    con.execute(f"SET threads={threads}")
     con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
 
 
-def _attempt_worker(template_name: str, countries: list[tuple[str, str]], q: "multiprocessing.Queue") -> None:
-    con = connect()
+def _attempt_worker(template_name: str, countries: list[tuple[str, str]], threads: int, q: "multiprocessing.Queue") -> None:
+    con = connect(threads)
     country_id, country_name = random.choice(countries)
     result = SAMPLERS[template_name](con, country_id)
     if result is not None:
@@ -89,7 +90,7 @@ def _attempt_worker(template_name: str, countries: list[tuple[str, str]], q: "mu
     q.put(result)
 
 
-def attempt_with_hard_timeout(template_name: str, countries: list[tuple[str, str]]) -> dict | None:
+def attempt_with_hard_timeout(template_name: str, countries: list[tuple[str, str]], threads: int) -> dict | None:
     """Run one full attempt (pick a country, run the sampler) in its own process,
     killed after QUERY_TIMEOUT_S if it hasn't returned.
 
@@ -103,7 +104,7 @@ def attempt_with_hard_timeout(template_name: str, countries: list[tuple[str, str
     A timed-out or otherwise-failing attempt returns None (counted as a miss).
     """
     q: multiprocessing.Queue = multiprocessing.Queue()
-    p = multiprocessing.Process(target=_attempt_worker, args=(template_name, countries, q))
+    p = multiprocessing.Process(target=_attempt_worker, args=(template_name, countries, threads, q))
     p.start()
     p.join(QUERY_TIMEOUT_S)
     if p.is_alive():
@@ -681,6 +682,13 @@ def main() -> None:
         default=10,
         help="give up on a template after target_rows * this many failed attempts",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=2,
+        help="DuckDB SET threads=N per connection (default 2, kept low on purpose — see connect()); "
+        "tune to roughly the machine's CPU core count for a faster large run (e.g. --threads 10)",
+    )
     args = parser.parse_args()
 
     templates = list(SAMPLERS) if args.template == "all" else [args.template]
@@ -693,7 +701,7 @@ def main() -> None:
     # Also fetches the country list once here (see fetch_countries()) rather than
     # opening a second connection just for that.
     try:
-        con = connect()
+        con = connect(args.threads)
         countries = fetch_countries(con)
         con.close()
     except duckdb.Error as e:
@@ -711,7 +719,7 @@ def main() -> None:
             max_attempts = target_per_template * args.max_attempts_factor
             while hits < target_per_template and attempts < max_attempts:
                 attempts += 1
-                result = attempt_with_hard_timeout(name, countries)
+                result = attempt_with_hard_timeout(name, countries, args.threads)
                 if result is None:
                     continue
                 hits += 1

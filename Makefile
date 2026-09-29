@@ -2,6 +2,14 @@ BBOX ?= -9.72,35.91,3.59,43.82 # or -9.84,35.55,3.43,44.43
 PARQUET_DIR := data/parquet
 SAMPLES_DIR := data/samples
 ROWS ?= 100
+THREADS ?= 2
+
+# Nice, hard-to-miss reminder shown before every DuckDB-backed script launch (see
+# sample-entities/validate-samples/evaluate below): the default is intentionally
+# low, and staying on it will make a large run slow.
+define PRINT_THREADS
+@printf "\n\033[1;36m⚙  DuckDB threads: %s\033[0m\n\033[33m   → default is 2, kept low on purpose. Raise it with THREADS=N to match your\033[0m\n\033[33m     CPU's core count (e.g. THREADS=10) — otherwise this run will be slow.\033[0m\n\n" "$(THREADS)"
+endef
 
 # Dedicated venv for the CUDA/Unsloth fine-tuning path (see `finetune-venv`).
 FINETUNE_VENV := .venv-finetune
@@ -21,14 +29,16 @@ download-overture:
 	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=water -o $(PARQUET_DIR)/eu_water.parquet
 	uvx overturemaps download --connect_timeout 60 --request_timeout 300 --no-stac --bbox=$(BBOX) -f geoparquet --type=place -o $(PARQUET_DIR)/eu_places.parquet
 
-# STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Example: make sample-entities ROWS=70000
+# STEP 4 sampling (see DESIGN.md / TEMPLATES.md). Example: make sample-entities ROWS=70000 THREADS=10
 sample-entities:
 	mkdir -p $(SAMPLES_DIR)
-	uvx --with duckdb python3 scripts/01_sample_entities.py --rows $(ROWS) --out $(SAMPLES_DIR)/entities.jsonl
+	$(PRINT_THREADS)
+	uvx --with duckdb python3 scripts/01_sample_entities.py --rows $(ROWS) --threads $(THREADS) --out $(SAMPLES_DIR)/entities.jsonl
 
 # STEP 4: fill templates with sampled entities and validate by execution (see scripts/02_fill_and_validate.py)
 validate-samples:
-	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated.jsonl
+	$(PRINT_THREADS)
+	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated.jsonl --threads $(THREADS)
 
 # STEP 4: generate NL question formulations (FR+EN) for validated pairs -> dataset.jsonl (see scripts/03_generate_questions.py)
 generate-questions:
@@ -76,7 +86,8 @@ finetune-mlx:
 # STEP 5, §5: evaluate the fine-tuned model's generated SQL against real DuckDB (see FINETUNING.md, scripts/07_evaluate.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
 evaluate: $(FINETUNE_VENV)/.ready
-	$(FINETUNE_PY) scripts/07_evaluate.py
+	$(PRINT_THREADS)
+	$(FINETUNE_PY) scripts/07_evaluate.py --threads $(THREADS)
 
 # STEP 5, §6: merge the LoRA adapter and export to quantized GGUF (see FINETUNING.md, scripts/08_merge_and_quantize.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
