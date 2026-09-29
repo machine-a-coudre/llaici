@@ -29,7 +29,11 @@ Sampling strategy (see DESIGN.md STEP 4 "Decisions"):
 - country-stratified: a random country is picked first (from `division_areas`,
   subtype='country'), then entities are sampled inside it, so densely-mapped
   countries/cities (Paris, Barcelona kept coming up in ad hoc testing) don't
-  dominate the sample.
+  dominate the sample. The random reference inside that country (a locality, a
+  river...) is picked by its `country` ISO code for divisions/division_areas — a
+  plain equality, not an ST_Within against the country polygon recomputed on every
+  attempt — and, for `water` (which has no country column), prefiltered on the raw
+  parquet's `bbox` before the exact ST_Intersects (see WATER_PARQUET).
 - bbox-prefiltered: every join against `water`/`division_areas` geometries is
   restricted to a bounding box first (see TEMPLATES.md "Bounding-box prefilter"),
   to avoid the OOM crash documented there (an unfiltered join against the full
@@ -60,6 +64,7 @@ import multiprocessing
 import random
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import duckdb
 
@@ -79,6 +84,27 @@ BBOX_SQL = """
     )
 """
 
+# `water` has no country column (unlike divisions/division_areas), so the river/lake
+# reference picks still need a spatial filter against the country. The raw parquet's
+# `bbox` struct (not exposed by the `water` view, which only keeps what the LLM
+# queries) gives a cheap first cut that DuckDB can push down into the parquet scan,
+# but a bbox alone isn't enough: France's still holds ~100k rivers, and ST_Intersects
+# against its detailed polygon over all of them took ~20s (every French attempt timed
+# out). So WATER_CANDIDATES random bbox rows are drawn first, and the exact checks
+# (ST_Intersects, ST_Length_Spheroid...) only run on those: ~0.15s for France.
+WATER_PARQUET = "data/parquet/eu_water.parquet"
+WATER_CANDIDATES = 200
+
+
+class Country(NamedTuple):
+    id: str  # division_areas.id
+    name: str
+    code: str  # ISO 3166-1 alpha-2, matches divisions.country / division_areas.country
+    xmin: float
+    xmax: float
+    ymin: float
+    ymax: float
+
 
 def connect(threads: int = 2) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(DB_PATH, read_only=True)
@@ -94,16 +120,16 @@ def connect(threads: int = 2) -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _attempt_worker(template_name: str, countries: list[tuple[str, str]], threads: int, q: "multiprocessing.Queue") -> None:
+def _attempt_worker(template_name: str, countries: list[Country], threads: int, q: "multiprocessing.Queue") -> None:
     con = connect(threads)
-    country_id, country_name = random.choice(countries)
-    result = SAMPLERS[template_name](con, country_id)
+    country = random.choice(countries)
+    result = SAMPLERS[template_name](con, country)
     if result is not None:
-        result["country"] = country_name
+        result["country"] = country.name
     q.put(result)
 
 
-def attempt_with_hard_timeout(template_name: str, countries: list[tuple[str, str]], threads: int) -> dict | None:
+def attempt_with_hard_timeout(template_name: str, countries: list[Country], threads: int) -> dict | None:
     """Run one full attempt (pick a country, run the sampler) in its own process,
     killed after QUERY_TIMEOUT_S if it hasn't returned.
 
@@ -193,8 +219,11 @@ def merge_entities(out_path: Path, template_names: list[str], append: bool = Fal
     return total
 
 
-def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
-    """Fetches every (division_areas.id, name) with subtype='country' once, up front.
+def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[Country]:
+    """Fetches every division_areas row with subtype='country' once, up front, along
+    with its ISO code (reference picks filter divisions/division_areas on
+    `country = code` rather than ST_Within against the polygon) and its bbox (the
+    `water` picks' prefilter, see WATER_PARQUET).
 
     Every attempt used to re-run `ORDER BY random() LIMIT 1` on this table itself
     (in `pick_country()`, now removed) — cheap per call on its own, but each attempt
@@ -204,21 +233,28 @@ def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
     once and picking with `random.choice()` in Python moves the randomness out of
     SQL entirely — same distribution, one query total instead of one per attempt.
     """
-    return con.execute("SELECT id, name FROM division_areas WHERE subtype = 'country'").fetchall()
+    rows = con.execute(
+        """
+        SELECT id, name, country,
+               ST_XMin(geometry), ST_XMax(geometry), ST_YMin(geometry), ST_YMax(geometry)
+        FROM division_areas
+        WHERE subtype = 'country'
+        """
+    ).fetchall()
+    return [Country(*r) for r in rows]
 
 
 # ── Template 1: Containment ─────────────────────────────────────────────────
-def sample_containment(con, country_id: str) -> dict | None:
+def sample_containment(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="da.geometry", dist_m=0)
     row = con.execute(
         f"""
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        place AS (
+        WITH place AS (
             SELECT da.id, da.name, da.geometry, {bbox} AS box
-            FROM division_areas da, country
+            FROM division_areas da
             WHERE da.subtype = 'locality'
               AND da.name IS NOT NULL
-              AND ST_Within(da.geometry, country.geometry)
+              AND da.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT place.name, e.subtype, e.class
@@ -227,7 +263,7 @@ def sample_containment(con, country_id: str) -> dict | None:
           AND ST_Within(e.geometry, place.geometry)
         LIMIT 1
         """,
-        [country_id],
+        [c.code],
     ).fetchone()
     if row is None:
         return None
@@ -236,17 +272,16 @@ def sample_containment(con, country_id: str) -> dict | None:
 
 
 # ── Template 2: Generic proximity (reference = divisions, a point) ─────────
-def sample_proximity(con, country_id: str) -> dict | None:
+def sample_proximity(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="d.geometry", dist_m=5000)
     row = con.execute(
         f"""
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        ref AS (
+        WITH ref AS (
             SELECT d.id, d.name, d.geometry, {bbox} AS box
-            FROM divisions d, country
+            FROM divisions d
             WHERE d.subtype IN ('locality', 'neighborhood')
               AND d.name IS NOT NULL
-              AND ST_Within(d.geometry, country.geometry)
+              AND d.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT ref.name, e.subtype, e.class,
@@ -262,7 +297,7 @@ def sample_proximity(con, country_id: str) -> dict | None:
                   5000)
         LIMIT 1
         """,
-        [country_id],
+        [c.code],
     ).fetchone()
     if row is None:
         return None
@@ -278,20 +313,27 @@ def sample_proximity(con, country_id: str) -> dict | None:
 
 
 # ── Template 3: Along (reference = water, a linestring) ────────────────────
-def sample_along(con, country_id: str) -> dict | None:
+def sample_along(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="line", dist_m=500)
     row = con.execute(
         f"""
         WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
+        candidates AS (
+            SELECT w.names.primary AS name, w.geometry AS line
+            FROM read_parquet('{WATER_PARQUET}') w
+            WHERE w.bbox.xmax >= ? AND w.bbox.xmin <= ?
+              AND w.bbox.ymax >= ? AND w.bbox.ymin <= ?
+              AND w.class IN ('river', 'stream', 'canal')
+              AND w.names.primary IS NOT NULL
+            ORDER BY random() LIMIT {WATER_CANDIDATES}
+        ),
         segment AS (
-            SELECT w.name, w.geometry AS line
-            FROM water w, country
-            WHERE w.class IN ('river', 'stream', 'canal')
-              AND w.name IS NOT NULL
-              AND ST_GeometryType(w.geometry) = 'LINESTRING'
-              AND ST_Intersects(w.geometry, country.geometry)
-              AND ST_Length_Spheroid(w.geometry) < 50000
-            ORDER BY random() LIMIT 1
+            SELECT name, line
+            FROM candidates, country
+            WHERE ST_GeometryType(line) = 'LINESTRING'
+              AND ST_Intersects(line, country.geometry)
+              AND ST_Length_Spheroid(line) < 50000
+            LIMIT 1
         ),
         bbox AS (
             SELECT name, line, {bbox} AS box
@@ -309,7 +351,7 @@ def sample_along(con, country_id: str) -> dict | None:
                   500)
         LIMIT 1
         """,
-        [country_id],
+        [c.id, c.xmin, c.xmax, c.ymin, c.ymax],
     ).fetchone()
     if row is None:
         return None
@@ -318,20 +360,19 @@ def sample_along(con, country_id: str) -> dict | None:
 
 
 # ── Template 4: Center of (reference = division_areas, radius from area) ───
-def sample_center(con, country_id: str) -> dict | None:
+def sample_center(con, c: Country) -> dict | None:
     # radius_m is a computed column, not a python literal, so the bbox expression
     # references it by name rather than substituting a number (see BBOX_SQL).
     bbox = BBOX_SQL.format(geom="geometry", dist_m="radius_m")
     row = con.execute(
         f"""
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        place AS (
+        WITH place AS (
             SELECT da.name, da.geometry,
                    GREATEST(300, LEAST(5000, 0.15 * SQRT(ST_Area_Spheroid(da.geometry)))) AS radius_m
-            FROM division_areas da, country
+            FROM division_areas da
             WHERE da.subtype = 'locality'
               AND da.name IS NOT NULL
-              AND ST_Within(da.geometry, country.geometry)
+              AND da.country = ?
             ORDER BY random() LIMIT 1
         ),
         bbox AS (
@@ -347,7 +388,7 @@ def sample_center(con, country_id: str) -> dict | None:
                   bbox.radius_m)
         LIMIT 1
         """,
-        [country_id],
+        [c.code],
     ).fetchone()
     if row is None:
         return None
@@ -356,17 +397,16 @@ def sample_center(con, country_id: str) -> dict | None:
 
 
 # ── Template 5: Periphery (reference = division_areas boundary) ────────────
-def sample_periphery(con, country_id: str) -> dict | None:
+def sample_periphery(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="da.geometry", dist_m=500)
     row = con.execute(
         f"""
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        place AS (
+        WITH place AS (
             SELECT da.name, da.geometry, {bbox} AS box
-            FROM division_areas da, country
+            FROM division_areas da
             WHERE da.subtype = 'locality'
               AND da.name IS NOT NULL
-              AND ST_Within(da.geometry, country.geometry)
+              AND da.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT place.name, e.subtype, e.class
@@ -382,7 +422,7 @@ def sample_periphery(con, country_id: str) -> dict | None:
                   500)
         LIMIT 1
         """,
-        [country_id],
+        [c.code],
     ).fetchone()
     if row is None:
         return None
@@ -405,17 +445,17 @@ def classify_bearing(bearing: float) -> tuple[str, float, float]:
     return next((d, lo, hi) for d, lo, hi in DIRECTIONS if lo <= bearing < hi)
 
 
-def sample_direction(con, country_id: str, with_distance: bool) -> dict | None:
+def sample_direction(con, c: Country, with_distance: bool) -> dict | None:
     bbox = BBOX_SQL.format(geom="d.geometry", dist_m=100000)
     row = con.execute(
         f"""
         WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
         ref AS (
             SELECT d.name, d.geometry, {bbox} AS box
-            FROM divisions d, country
+            FROM divisions d
             WHERE d.subtype IN ('locality', 'neighborhood')
               AND d.name IS NOT NULL
-              AND ST_Within(d.geometry, country.geometry)
+              AND d.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT ref.name, e.subtype, e.class,
@@ -436,7 +476,7 @@ def sample_direction(con, country_id: str, with_distance: bool) -> dict | None:
                   100000)
         LIMIT 1
         """,
-        [country_id],
+        [c.id, c.code],
     ).fetchone()
     if row is None:
         return None
@@ -458,18 +498,25 @@ def sample_direction(con, country_id: str, with_distance: bool) -> dict | None:
 
 
 # ── Template 8: Area-based distance (reference = water, any geometry type) ─
-def sample_area_distance(con, country_id: str) -> dict | None:
+def sample_area_distance(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="line", dist_m=5000)
     row = con.execute(
         f"""
         WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
+        candidates AS (
+            SELECT w.names.primary AS name, w.geometry AS line
+            FROM read_parquet('{WATER_PARQUET}') w
+            WHERE w.bbox.xmax >= ? AND w.bbox.xmin <= ?
+              AND w.bbox.ymax >= ? AND w.bbox.ymin <= ?
+              AND w.class IN ('lake', 'reservoir')
+              AND w.names.primary IS NOT NULL
+            ORDER BY random() LIMIT {WATER_CANDIDATES}
+        ),
         ref AS (
-            SELECT w.name, w.geometry AS line
-            FROM water w, country
-            WHERE w.class IN ('lake', 'reservoir')
-              AND w.name IS NOT NULL
-              AND ST_Intersects(w.geometry, country.geometry)
-            ORDER BY random() LIMIT 1
+            SELECT name, line
+            FROM candidates, country
+            WHERE ST_Intersects(line, country.geometry)
+            LIMIT 1
         ),
         bbox AS (
             SELECT name, line, {bbox} AS box
@@ -487,7 +534,7 @@ def sample_area_distance(con, country_id: str) -> dict | None:
                   5000)
         LIMIT 1
         """,
-        [country_id],
+        [c.id, c.xmin, c.xmax, c.ymin, c.ymax],
     ).fetchone()
     if row is None:
         return None
@@ -496,20 +543,27 @@ def sample_area_distance(con, country_id: str) -> dict | None:
 
 
 # ── Left bank / right bank ──────────────────────────────────────────────────
-def sample_left_right_bank(con, country_id: str) -> dict | None:
+def sample_left_right_bank(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="line", dist_m=3000)
     row = con.execute(
         f"""
         WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
+        candidates AS (
+            SELECT w.names.primary AS name, w.geometry AS line
+            FROM read_parquet('{WATER_PARQUET}') w
+            WHERE w.bbox.xmax >= ? AND w.bbox.xmin <= ?
+              AND w.bbox.ymax >= ? AND w.bbox.ymin <= ?
+              AND w.class IN ('river', 'stream', 'canal')
+              AND w.names.primary IS NOT NULL
+            ORDER BY random() LIMIT {WATER_CANDIDATES}
+        ),
         segment AS (
-            SELECT w.name, w.geometry AS line
-            FROM water w, country
-            WHERE w.class IN ('river', 'stream', 'canal')
-              AND w.name IS NOT NULL
-              AND ST_GeometryType(w.geometry) = 'LINESTRING'
-              AND ST_Intersects(w.geometry, country.geometry)
-              AND ST_Length_Spheroid(w.geometry) < 50000
-            ORDER BY random() LIMIT 1
+            SELECT name, line
+            FROM candidates, country
+            WHERE ST_GeometryType(line) = 'LINESTRING'
+              AND ST_Intersects(line, country.geometry)
+              AND ST_Length_Spheroid(line) < 50000
+            LIMIT 1
         ),
         bbox AS (
             SELECT name, line, {bbox} AS box
@@ -538,7 +592,7 @@ def sample_left_right_bank(con, country_id: str) -> dict | None:
                ) AS side_sign
         FROM candidate
         """,
-        [country_id],
+        [c.id, c.xmin, c.xmax, c.ymin, c.ymax],
     ).fetchone()
     if row is None:
         return None
@@ -555,7 +609,7 @@ def sample_left_right_bank(con, country_id: str) -> dict | None:
 
 
 # ── Template 10: Bordering a place (draft, not yet tested — see TEMPLATES.md) ──
-def sample_bordering(con, country_id: str) -> dict | None:
+def sample_bordering(con, c: Country) -> dict | None:
     bbox = BBOX_SQL.format(geom="area", dist_m=20000)
     row = con.execute(
         f"""
@@ -577,7 +631,7 @@ def sample_bordering(con, country_id: str) -> dict | None:
                   20000)
         ORDER BY random() LIMIT 1
         """,
-        [country_id],
+        [c.id],
     ).fetchone()
     if row is None:
         return None
@@ -587,17 +641,16 @@ def sample_bordering(con, country_id: str) -> dict | None:
 
 # ── Template 12: Cities in a direction (candidate = divisions locality, not
 # infrastructures — see TEMPLATES.md "12. Cities in a direction") ──────────
-def sample_city_direction(con, country_id: str, with_distance: bool) -> dict | None:
+def sample_city_direction(con, c: Country, with_distance: bool) -> dict | None:
     bbox = BBOX_SQL.format(geom="d.geometry", dist_m=100000)
     row = con.execute(
         f"""
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        ref AS (
+        WITH ref AS (
             SELECT d.name, d.geometry, {bbox} AS box
-            FROM divisions d, country
+            FROM divisions d
             WHERE d.subtype IN ('locality', 'neighborhood')
               AND d.name IS NOT NULL
-              AND ST_Within(d.geometry, country.geometry)
+              AND d.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT ref.name,
@@ -619,7 +672,7 @@ def sample_city_direction(con, country_id: str, with_distance: bool) -> dict | N
               ) BETWEEN 500 AND 100000
         LIMIT 1
         """,
-        [country_id],
+        [c.code],
     ).fetchone()
     if row is None:
         return None
@@ -639,7 +692,7 @@ def sample_city_direction(con, country_id: str, with_distance: bool) -> dict | N
 
 
 # ── Template 11: Show a division (no infrastructures join — just resolves a name) ──
-def sample_show_division(con, country_id: str) -> dict | None:
+def sample_show_division(con, c: Country) -> dict | None:
     """Picks either the country itself (~30% of the time) or a random locality
     inside it, so training examples cover both "show me France" and "show me Lyon"
     phrasings (TEMPLATES.md template #11). No infrastructures/water join needed —
@@ -647,20 +700,19 @@ def sample_show_division(con, country_id: str) -> dict | None:
     if random.random() < 0.3:
         row = con.execute(
             "SELECT name FROM divisions WHERE id = (SELECT division_id FROM division_areas WHERE id = ?)",
-            [country_id],
+            [c.id],
         ).fetchone()
     else:
         row = con.execute(
             """
-            WITH country AS (SELECT geometry FROM division_areas WHERE id = ?)
             SELECT d.name
-            FROM divisions d, country
+            FROM divisions d
             WHERE d.subtype = 'locality'
               AND d.name IS NOT NULL
-              AND ST_Within(d.geometry, country.geometry)
+              AND d.country = ?
             ORDER BY random() LIMIT 1
             """,
-            [country_id],
+            [c.code],
         ).fetchone()
     if row is None:
         return None
@@ -673,17 +725,16 @@ def sample_show_division(con, country_id: str) -> dict | None:
 PLACE_CATEGORIES = ["restaurant", "lodging", "hotel", "school", "hospital", "shopping_mall", "grocery_store"]
 
 
-def sample_places_containment(con, country_id: str) -> dict | None:
+def sample_places_containment(con, c: Country) -> dict | None:
     category = random.choice(PLACE_CATEGORIES)
     row = con.execute(
         """
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        place AS (
+        WITH place AS (
             SELECT da.name, da.geometry
-            FROM division_areas da, country
+            FROM division_areas da
             WHERE da.subtype = 'locality'
               AND da.name IS NOT NULL
-              AND ST_Within(da.geometry, country.geometry)
+              AND da.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT place.name
@@ -692,24 +743,23 @@ def sample_places_containment(con, country_id: str) -> dict | None:
           AND ST_Within(p.geometry, place.geometry)
         LIMIT 1
         """,
-        [country_id, category],
+        [c.code, category],
     ).fetchone()
     if row is None:
         return None
     return {"template": "places_containment", "place": row[0], "category": category}
 
 
-def sample_places_proximity(con, country_id: str) -> dict | None:
+def sample_places_proximity(con, c: Country) -> dict | None:
     category = random.choice(PLACE_CATEGORIES)
     row = con.execute(
         """
-        WITH country AS (SELECT geometry FROM division_areas WHERE id = ?),
-        ref AS (
+        WITH ref AS (
             SELECT d.name, d.geometry
-            FROM divisions d, country
+            FROM divisions d
             WHERE d.subtype IN ('locality', 'neighborhood')
               AND d.name IS NOT NULL
-              AND ST_Within(d.geometry, country.geometry)
+              AND d.country = ?
             ORDER BY random() LIMIT 1
         )
         SELECT ref.name
@@ -721,7 +771,7 @@ def sample_places_proximity(con, country_id: str) -> dict | None:
                 5000)
         LIMIT 1
         """,
-        [country_id, category],
+        [c.code, category],
     ).fetchone()
     if row is None:
         return None
@@ -729,21 +779,21 @@ def sample_places_proximity(con, country_id: str) -> dict | None:
 
 
 SAMPLERS = {
-    "containment": lambda con, cid: sample_containment(con, cid),
-    "proximity": lambda con, cid: sample_proximity(con, cid),
-    "along": lambda con, cid: sample_along(con, cid),
-    "center": lambda con, cid: sample_center(con, cid),
-    "periphery": lambda con, cid: sample_periphery(con, cid),
-    "direction": lambda con, cid: sample_direction(con, cid, with_distance=False),
-    "direction_distance": lambda con, cid: sample_direction(con, cid, with_distance=True),
-    "area_distance": lambda con, cid: sample_area_distance(con, cid),
-    "left_right_bank": lambda con, cid: sample_left_right_bank(con, cid),
-    "places_containment": lambda con, cid: sample_places_containment(con, cid),
-    "places_proximity": lambda con, cid: sample_places_proximity(con, cid),
-    "bordering": lambda con, cid: sample_bordering(con, cid),
-    "show_division": lambda con, cid: sample_show_division(con, cid),
-    "city_direction": lambda con, cid: sample_city_direction(con, cid, with_distance=False),
-    "city_direction_distance": lambda con, cid: sample_city_direction(con, cid, with_distance=True),
+    "containment": lambda con, c: sample_containment(con, c),
+    "proximity": lambda con, c: sample_proximity(con, c),
+    "along": lambda con, c: sample_along(con, c),
+    "center": lambda con, c: sample_center(con, c),
+    "periphery": lambda con, c: sample_periphery(con, c),
+    "direction": lambda con, c: sample_direction(con, c, with_distance=False),
+    "direction_distance": lambda con, c: sample_direction(con, c, with_distance=True),
+    "area_distance": lambda con, c: sample_area_distance(con, c),
+    "left_right_bank": lambda con, c: sample_left_right_bank(con, c),
+    "places_containment": lambda con, c: sample_places_containment(con, c),
+    "places_proximity": lambda con, c: sample_places_proximity(con, c),
+    "bordering": lambda con, c: sample_bordering(con, c),
+    "show_division": lambda con, c: sample_show_division(con, c),
+    "city_direction": lambda con, c: sample_city_direction(con, c, with_distance=False),
+    "city_direction_distance": lambda con, c: sample_city_direction(con, c, with_distance=True),
 }
 
 
@@ -805,6 +855,11 @@ def main() -> None:
         con = connect(args.threads)
         countries = fetch_countries(con)
         con.close()
+    except duckdb.BinderException as e:
+        sys.exit(
+            f"# {e}\n# (views predate the `country` column? rebuild them: "
+            'uvx --with duckdb python3 -c "import duckdb; duckdb.connect().execute(open(\'scripts/00_init.sql\').read())")'
+        )
     except duckdb.Error as e:
         sys.exit(f"# cannot open {DB_PATH}: {e}\n# (DB locked? stop the container: docker compose stop duckdb)")
     if not countries:

@@ -25,6 +25,7 @@ Geometry: representative **point** (country, region, city, neighborhood...).
 | `id` | `id` | VARCHAR | Stable identifier (GERS) |
 | `name` | `names.primary` | VARCHAR | Primary display name |
 | `name_fr`, `name_es`, `name_it`, `name_de`, `name_en`, `name_pt`, `name_ru`, `name_uk`, `name_nl`, `name_pl`, `name_th`, `name_zh`, `name_ar` | `names.common['fr']`, `['es']`, `['it']`, `['de']`, `['en']`, `['pt']`, `['ru']`, `['uk']`, `['nl']`, `['pl']`, `['th']`, `['zh']`, `['ar']` | VARCHAR | Multilingual name search — the LLM does not translate, it searches the term as-is in these columns (see DESIGN.md STEP 3) |
+| `country` | `country` | VARCHAR | ISO 3166-1 alpha-2 code (`FR`, `ES`...) of the country the entity belongs to — lets `01_sample_entities.py` pick references per country with a plain equality instead of an `ST_Within` against the country polygon |
 | `subtype` | `subtype` | VARCHAR | Distinguishes `country`/`region`/`county`/`localadmin`/`locality`/`neighborhood`/`microhood`/`macrohood`/`dependency` |
 | `class` | `class` | VARCHAR | Sub-category of `locality` (`hamlet`, `village`, `town`, `city`) — often `NULL` for other subtypes |
 | `admin_level` | `admin_level` | INTEGER | Administrative hierarchy level |
@@ -64,6 +65,7 @@ SELECT
     names.common['th']     AS name_th,
     names.common['zh']     AS name_zh,
     names.common['ar']     AS name_ar,
+    country,
     subtype,
     class,
     admin_level,
@@ -89,6 +91,7 @@ SELECT
     names.common['th']     AS name_th,
     names.common['zh']     AS name_zh,
     names.common['ar']     AS name_ar,
+    country,
     subtype,
     class,
     admin_level,
@@ -112,6 +115,7 @@ Geometry: **polygon** (administrative boundary). Complementary to `divisions` (j
 | `division_id` | `division_id` | VARCHAR | Join key to `divisions.id` |
 | `name` | `names.primary` | VARCHAR | Primary name |
 | `name_fr`, `name_es`, `name_it`, `name_de`, `name_en`, `name_pt`, `name_ru`, `name_uk`, `name_nl`, `name_pl`, `name_th`, `name_zh`, `name_ar` | `names.common[...]` | VARCHAR | Multilingual search, consistent with `divisions` |
+| `country` | `country` | VARCHAR | ISO 3166-1 alpha-2 code (`FR`, `ES`...) of the country the area belongs to — lets `01_sample_entities.py` pick references per country with a plain equality instead of an `ST_Within` against the country polygon |
 | `subtype` | `subtype` | VARCHAR | Same nomenclature as `divisions` |
 | `class` | `class` | VARCHAR | `land` / `maritime` |
 | `is_land` | `is_land` | BOOLEAN | Distinguishes land area |
@@ -151,6 +155,7 @@ SELECT
     names.common['th']     AS name_th,
     names.common['zh']     AS name_zh,
     names.common['ar']     AS name_ar,
+    country,
     subtype,
     class,
     is_land,
