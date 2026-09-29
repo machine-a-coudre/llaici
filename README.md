@@ -50,13 +50,15 @@ docker compose up duckdb        # once: builds the DuckDB views (00_init.sql) on
 ...the rest of the pipeline (steps 01-08) is just two commands:
 
 ```bash
-make generate-dataset ROWS=70000              # steps 01-05: sample, validate, generate questions, split, format
+make generate-dataset ROWS=70000 THREADS=10   # steps 01-05: sample, validate, generate questions, split, format
 
 make finetune-venv                            # once: sets up the fine-tuning environment (CUDA path only, see below)
 make finetune-pipeline-cuda                   # steps 06-08: fine-tune, evaluate, merge/quantize — NVIDIA GPU (CUDA)
 # or, on a Mac:
 make finetune-pipeline-mlx LLAMA_CPP_DIR=~/llama.cpp   # steps 06+08 — Apple Silicon (mlx-lm), see FINETUNING.md
 ```
+
+`THREADS` defaults to **2** (kept low on purpose, to stay light on whatever machine this runs on) — raise it to match your CPU's actual core count (e.g. `THREADS=10` on a 10-core machine) for a much faster run; see `docs/PIPELINE.md` for details.
 
 `make finetune-venv` creates a dedicated Python environment in `.venv-finetune/` (with [uv](https://docs.astral.sh/uv/)) holding Unsloth and a CUDA build of PyTorch, then checks that the GPU is actually usable from it. The CUDA targets (`finetune`, `evaluate`, `merge-and-quantize`) run inside that environment and build it automatically if it's missing, so this step is optional — running it first just surfaces install problems early. The PyTorch CUDA version defaults to `cu130`; override it with `TORCH_BACKEND` (e.g. `make finetune-venv TORCH_BACKEND=cu128`) if your driver doesn't support CUDA 13.0. To rebuild from scratch: `rm -rf .venv-finetune`.
 

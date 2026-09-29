@@ -18,9 +18,9 @@ merged file stays intact. `entities.jsonl` is (re)built by merging every templat
 own file (`merge_entities()`), which happens automatically after a `--template all`
 run, or on demand via `--template merge` (skips sampling entirely, just concatenates
 whatever per-template files already exist — e.g. after regenerating one template).
-Either merge path prompts for confirmation before overwriting an existing
-`entities.jsonl` (a merge replaces its content, not an append) — pass `--yes` to
-skip that prompt for scripted/CI use.
+If `entities.jsonl` already exists, either merge path asks what to do with it:
+merge into it (append), overwrite it (fresh full replace), or cancel — pass
+`--yes` to skip the prompt and always overwrite (scripted/CI use).
 
 Sampling strategy (see DESIGN.md STEP 4 "Decisions"):
 - join-driven: every parameter set comes from a real spatial join (e.g. a real bus
@@ -140,32 +140,47 @@ def per_template_path(out_path: Path, name: str) -> Path:
     return out_path.with_name(f"{out_path.stem}_{name}{out_path.suffix}")
 
 
-def confirm_overwrite(path: Path, skip_confirm: bool) -> bool:
-    """Asks before merge_entities() truncates an existing `path`, since a merge
-    fully replaces its previous content (not an append) — see the module's
-    `--template merge` docs. Returns True if it's fine to proceed.
+def ask_merge_mode(path: Path, skip_confirm: bool) -> str:
+    """Asks what to do about an existing `path` before merge_entities() touches it.
+    Returns one of `"overwrite"` (fresh full merge, previous content discarded),
+    `"merge"` (append the fresh merge onto the existing file's content), or
+    `"cancel"` (do nothing).
 
-    `skip_confirm` (--yes) bypasses the prompt for scripted/CI use (the Makefile's
-    full-pipeline targets pass it); without a real terminal to prompt on, an
-    EOFError from `input()` is treated as "no" rather than hanging or guessing.
+    Returns `"overwrite"` immediately if `path` doesn't exist yet (nothing to
+    choose between) or `skip_confirm` (`--yes`) is set — scripted/CI use (the
+    Makefile's full-pipeline targets pass it) always wants the previous default of
+    a full, authoritative rebuild, not an accumulating append. Without a real
+    terminal to prompt on, an EOFError from `input()` is treated as "cancel"
+    rather than hanging or guessing.
     """
     if not path.exists() or skip_confirm:
-        return True
-    print(f"\033[1;33m⚠  {path} already exists and will be overwritten by this merge.\033[0m", file=sys.stderr)
+        return "overwrite"
+    print(f"\033[1;33m⚠  {path} already exists.\033[0m", file=sys.stderr)
     try:
-        answer = input("Overwrite it? [y/N]: ").strip().lower()
+        answer = input("[m]erge into it, [o]verwrite it, or [c]ancel? [m/o/c]: ").strip().lower()
     except EOFError:
         print("# no input available (non-interactive?) — pass --yes to skip this prompt", file=sys.stderr)
-        return False
-    return answer in ("y", "yes")
+        return "cancel"
+    if answer in ("m", "merge"):
+        return "merge"
+    if answer in ("o", "overwrite"):
+        return "overwrite"
+    return "cancel"
 
 
-def merge_entities(out_path: Path, template_names: list[str]) -> int:
+def merge_entities(out_path: Path, template_names: list[str], append: bool = False) -> int:
     """Concatenates every template's own `entities_<name>.jsonl` into `out_path`, in
     `template_names` order. A missing part file is skipped with a warning (e.g. a
-    template that was never sampled yet) rather than aborting the whole merge."""
+    template that was never sampled yet) rather than aborting the whole merge.
+
+    `append=True` adds to `out_path`'s existing content instead of replacing it —
+    the "merge into it" choice from `ask_merge_mode()`. Note this can duplicate
+    rows if the same per-template content was already merged in before; entries
+    are plain sampled params here; deduplication happens later, on the exact
+    (question, sql) pairs `03_generate_questions.py` produces from them.
+    """
     total = 0
-    with out_path.open("w", encoding="utf-8") as fout:
+    with out_path.open("a" if append else "w", encoding="utf-8") as fout:
         for name in template_names:
             part_path = per_template_path(out_path, name)
             if not part_path.exists():
@@ -770,10 +785,12 @@ def main() -> None:
     # 'merge' only ever reads existing entities_<name>.jsonl files and concatenates
     # them — no sampling, no DB connection needed at all.
     if args.template == "merge":
-        if not confirm_overwrite(out_path, args.yes):
-            sys.exit(f"# merge aborted, {out_path} left untouched")
-        total = merge_entities(out_path, list(SAMPLERS))
-        print(f"# merged {total} rows into {out_path}", file=sys.stderr)
+        mode = ask_merge_mode(out_path, args.yes)
+        if mode == "cancel":
+            sys.exit(f"# cancelled, {out_path} left untouched")
+        total = merge_entities(out_path, list(SAMPLERS), append=(mode == "merge"))
+        verb = "appended onto" if mode == "merge" else "written to (overwritten)"
+        print(f"# {total} rows {verb} {out_path}", file=sys.stderr)
         return
 
     templates = list(SAMPLERS) if args.template == "all" else [args.template]
@@ -795,8 +812,11 @@ def main() -> None:
 
     # Ask before, not after, sampling everything: aborting post-hoc would waste a
     # potentially long `--template all` run just to then refuse the merge at the end.
-    if args.template == "all" and not confirm_overwrite(out_path, args.yes):
-        sys.exit(f"# aborted, {out_path} left untouched (per-template files would still be (re)written — rerun with --yes, or a single --template, to proceed)")
+    merge_mode = "overwrite"
+    if args.template == "all":
+        merge_mode = ask_merge_mode(out_path, args.yes)
+        if merge_mode == "cancel":
+            sys.exit(f"# cancelled, {out_path} left untouched (per-template files would still be (re)written — rerun with --yes, or a single --template, to proceed)")
 
     # Each template writes only to its own entities_<name>.jsonl (see per_template_path())
     # — regenerating one template (`--template along`) never touches `out_path` itself,
@@ -819,8 +839,9 @@ def main() -> None:
         print(f"# {name}: {hits}/{target_per_template} sampled ({attempts} attempts) -> {part_path}", file=sys.stderr)
 
     if args.template == "all":
-        merged = merge_entities(out_path, list(SAMPLERS))
-        print(f"# merged {merged} rows into {out_path}", file=sys.stderr)
+        merged = merge_entities(out_path, list(SAMPLERS), append=(merge_mode == "merge"))
+        verb = "appended onto" if merge_mode == "merge" else "written to (overwritten)"
+        print(f"# {merged} rows {verb} {out_path}", file=sys.stderr)
     else:
         print(
             f"# total: {total_hits} rows written to {per_template_path(out_path, templates[0])} "

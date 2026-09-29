@@ -82,14 +82,18 @@ make merge-samples                             # rebuilds entities.jsonl from ev
 
 `TEMPLATE=<name>` (one of the `SAMPLERS` keys in `scripts/01_sample_entities.py`, e.g. `along`, `center`, `bordering`, `show_division`...) only ever overwrites that one template's own file — `entities.jsonl` is **left untouched** until an explicit merge. `make merge-samples` (`--template merge`) does that merge on its own, with no resampling — it just concatenates whichever `entities_<name>.jsonl` files already exist, in a fixed order, warning (not failing) about any that are missing.
 
-A merge fully **replaces** `entities.jsonl`'s content (it's not an append), so both merge paths (`--template merge` and the automatic one after `--template all`) ask for confirmation first if the file already exists:
+If `entities.jsonl` already exists, both merge paths (`--template merge` and the automatic one after `--template all`) ask what to do with it before touching anything:
 
 ```
-⚠  data/samples/entities.jsonl already exists and will be overwritten by this merge.
-Overwrite it? [y/N]:
+⚠  data/samples/entities.jsonl already exists.
+[m]erge into it, [o]verwrite it, or [c]ancel? [m/o/c]:
 ```
 
-Pass `--yes`/`-y` to skip the prompt (e.g. for scripted/CI use) — the `sample-entities`/`generate-dataset` `make` targets already do this, since they're meant to run unattended; `make merge-samples` does not, so it always prompts.
+- **`m` (merge)** — appends the fresh merge onto the existing file's content, keeping what was already there. Can produce duplicate rows if some of that content was already merged in before (harmless: `02_fill_and_validate.py` re-validates every row regardless, and `03_generate_questions.py` dedupes the final `(question, sql)` pairs downstream) — this is meant for combining genuinely different batches (e.g. runs with different `ROWS`/countries), not for "regenerated the same template, merge it back in".
+- **`o` (overwrite)** — the previous default: a fresh full replace, discarding whatever `entities.jsonl` held before.
+- **`c` (cancel)**, or anything else typed — aborts, `entities.jsonl` left exactly as it was; for the `--template all` path this is checked *before* sampling starts, so a cancelled run doesn't waste time regenerating every template's file first.
+
+Pass `--yes`/`-y` to skip the prompt and always overwrite (e.g. for scripted/CI use) — the `sample-entities`/`generate-dataset` `make` targets already do this, since they're meant to run unattended; `make merge-samples` does not, so it always prompts.
 
 ---
 
