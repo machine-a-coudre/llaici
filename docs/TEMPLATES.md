@@ -367,8 +367,8 @@ WITH ref AS (
     WHERE (name ILIKE '%{place}%' OR name_fr ILIKE '%{place}%' /* ...other name_* columns */)
     LIMIT 1
 ),
-bbox AS (
-    SELECT geometry AS area,
+bbox AS MATERIALIZED (
+    SELECT ST_Boundary(geometry) AS border,
            ST_Expand(
              ST_Envelope(geometry),
              {distance_m} / (111320.0 * cos(radians(
@@ -383,7 +383,7 @@ WHERE d.subtype = 'locality'
   AND ST_Intersects(d.geometry, bbox.box)
   AND ST_DWithin_Spheroid(
         ST_Point2D(ST_X(d.geometry), ST_Y(d.geometry)),
-        ST_Point2D(ST_X(ST_ClosestPoint(ST_Boundary(bbox.area), d.geometry)), ST_Y(ST_ClosestPoint(ST_Boundary(bbox.area), d.geometry))),
+        ST_Point2D(ST_X(ST_ClosestPoint(bbox.border, d.geometry)), ST_Y(ST_ClosestPoint(bbox.border, d.geometry))),
         {distance_m});
 ```
 
@@ -391,6 +391,8 @@ Params: `{place}` (the country/region name), `{distance_m}` (default **20,000m**
 
 Tested against real data (`data/db/llaici.duckdb`) via the STEP 4 sampler: 3/3 join-driven samples succeeded (Portugal ×2, Morocco ×1 as the `{place}`, real border towns found — e.g. Ozão, Sapelos), each producing a non-empty result once filled and executed. Took more attempts than most other templates (18 attempts for 3 hits, vs. single digits elsewhere) but no hang or performance issue — the bbox prefilter does its job even on a country-sized `ST_Boundary`.
 
+- **Correction (later full run):** the "no performance issue" above didn't hold at scale. For a country crossing the antimeridian (Russia, the US — present in `division_areas` only as polygons, see `fetch_countries()`), the bbox spans the globe, so every locality passed the prefilter; `ST_Boundary` of a ~200k-point polygon was then recomputed per row and everything sorted by `random()` — one attempt reached ~62 GB and got OOM-killed. The sampler (not the template SQL above) now computes the boundary once (`MATERIALIZED` CTE) and only runs the exact check on 200 random bbox candidates, and such countries are no longer sampled at all.
+- **Boundary computed once:** `ST_Boundary(geometry)` lives in the `bbox` CTE (as `border`), and the CTE is `MATERIALIZED` so DuckDB can't inline it back into the per-row predicate. The original version called `ST_Boundary(bbox.area)` inside the `WHERE`, i.e. twice per candidate locality — for France (~80k-point polygon, ~15k localities in the bbox) that's tens of thousands of full boundary rebuilds. This is the exact SQL `02_fill_and_validate.py` (`build_bordering`) executes, so it's also what `validate-samples` runs.
 - The bbox prefilter is necessary here: `division_areas` for a country is a large, complex polygon and `divisions` has ~976,733 rows EU-wide (see `SCHEMA.md`) — same unfiltered-join risk as `water`/`division_areas` joins elsewhere in this file.
 - `{distance_m}` default set to **20,000m** (wider than the 5,000m generic-proximity default): a country border isn't a fixed-width concept the way "near a city" is, and 5km would likely miss most real "border town" examples. Not recalibrated further after the initial test (small sample, 3 rows) — revisit if border-adjacent results look too sparse or too broad once run at STEP 4 scale.
 

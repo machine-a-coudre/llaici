@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """STEP 4, step 4 — generate NL question formulations (FR + EN) for validated pairs.
 
-Reads `data/samples/validated.jsonl` (produced by `fill_and_validate.py`) and, for
+Reads `data/samples/validated_samples.jsonl` (produced by `fill_and_validate.py`) and, for
 each validated (template, params, sql) row, generates several natural-language
 question formulations in French and English by filling hand-written phrase
 templates — one relation type, one set of phrasings, per language (DESIGN.md STEP 4
@@ -18,7 +18,7 @@ params, country) are dropped here — DESIGN.md: "The dataset contains only
 
 Run:
     uvx --with duckdb python3 scripts/03_generate_questions.py
-    uvx --with duckdb python3 scripts/03_generate_questions.py --in data/samples/validated.jsonl --out data/samples/dataset.jsonl --max-per-template 5000
+    uvx --with duckdb python3 scripts/03_generate_questions.py --in data/samples/validated_samples.jsonl --out data/samples/dataset.jsonl --max-per-template 5000
 """
 
 import argparse
@@ -212,7 +212,7 @@ def build_questions(template: str, params: dict) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--in", dest="in_path", default="data/samples/validated.jsonl")
+    parser.add_argument("--in", dest="in_path", default="data/samples/validated_samples.jsonl")
     parser.add_argument("--out", dest="out_path", default="data/samples/dataset.jsonl")
     parser.add_argument(
         "--max-per-template",

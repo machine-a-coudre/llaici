@@ -69,6 +69,8 @@ make sample-entities ROWS=70000 THREADS=10   # same, on a machine with CPU cores
 
 - `ROWS` — total sample rows across all templates (split evenly); defaults to 100 if omitted.
 - Each sampling attempt runs in its own subprocess with a hard timeout (see the script's "per-attempt timeout" note) — a rare attempt that hangs is killed automatically after a few seconds and counted as a miss, rather than blocking the run.
+- Only countries with at least one locality in `divisions` are sampled from (see `fetch_countries()`). The `--bbox` download also pulls in the country polygons of countries crossing the antimeridian (Russia, the US): their bbox spans every longitude, so it intersects any requested bbox, but none of their localities/infrastructures come along. Without this filter they'd be picked like any other country, wasting attempts — and for `bordering`, their huge polygons blew memory up to an OOM kill.
+- Each attempt worker is also capped at half the machine's RAM (`WORKER_MEM_FRACTION`, via `RLIMIT_AS` + DuckDB `memory_limit`): a runaway query fails that attempt (counted as a miss) instead of triggering the OOM killer on the whole session.
 - **Performance note**: both this script and step 02 default to `SET threads=2` (see `connect()` in each), deliberately low to stay light — overridable with `--threads`/`THREADS=` (both scripts, plus step 07). More RAM does **not** speed this up — DuckDB won't use more CPU cores than this setting regardless of available memory. **The right value depends on how many CPU cores the machine actually has** — pick a `--threads` value at or below that count (e.g. `THREADS=10` on a 10+ core machine); setting it higher than the core count doesn't help and can add contention.
 
 ### Regenerating a single template
@@ -99,7 +101,9 @@ Pass `--yes`/`-y` to skip the prompt and always overwrite (e.g. for scripted/CI 
 
 ## Step 02 — Fill templates and validate by execution (`scripts/02_fill_and_validate.py`)
 
-Fills each sampled row's matching SQL template (see `TEMPLATES.md`) with its real values and executes it, keeping only pairs that return a non-empty result. Output: `data/samples/validated.jsonl`.
+Fills each sampled row's matching SQL template (see `TEMPLATES.md`) with its real values and executes it, keeping only pairs that return a non-empty result. Output: `data/samples/validated_samples.jsonl`.
+
+Not to be confused with the **validation set** (`val.jsonl` / `val_formatted.jsonl`, step 04): "validated" here means *the filled SQL was checked by execution* — a data-quality filter before the dataset is built. The validation set is the held-out split used to measure the model (eval loss during `06_finetune.py`, generated-SQL checks in `07_evaluate.py`).
 
 ```bash
 make validate-samples

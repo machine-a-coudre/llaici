@@ -61,7 +61,9 @@ Run (or via `make sample-entities ROWS=100` / `make merge-samples`, see Makefile
 import argparse
 import json
 import multiprocessing
+import os
 import random
+import resource
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -70,6 +72,10 @@ import duckdb
 
 DB_PATH = "data/db/llaici.duckdb"
 QUERY_TIMEOUT_S = 8
+# Hard address-space cap per attempt worker (see _attempt_worker): the timeout alone
+# doesn't bound memory — a runaway query can allocate tens of GB within those 8s and
+# get the OOM killer to take down the whole terminal session, not just the attempt.
+WORKER_MEM_FRACTION = 0.5
 
 # Expands a geometry's bounding box by `dist_m` meters, converted to degrees.
 # See TEMPLATES.md "Bounding-box prefilter" for why the longitude (larger) degree
@@ -121,7 +127,14 @@ def connect(threads: int = 2) -> duckdb.DuckDBPyConnection:
 
 
 def _attempt_worker(template_name: str, countries: list[Country], threads: int, q: "multiprocessing.Queue") -> None:
+    # Over the cap, allocations fail inside this worker only: the attempt errors out
+    # (or the worker dies) and counts as a miss, instead of the kernel OOM killer
+    # picking victims machine-wide.
+    total_mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    cap = int(total_mem * WORKER_MEM_FRACTION)
+    resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
     con = connect(threads)
+    con.execute(f"SET memory_limit='{cap * 3 // 4 // 2**20}MB'")
     country = random.choice(countries)
     result = SAMPLERS[template_name](con, country)
     if result is not None:
@@ -232,6 +245,15 @@ def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[Country]:
     redundant queries (plus a sort) for a result set that never changes. Fetching
     once and picking with `random.choice()` in Python moves the randomness out of
     SQL entirely — same distribution, one query total instead of one per attempt.
+
+    Only countries with at least one locality in `divisions` are kept. The
+    `download-overture --bbox` filter keeps every feature whose *bbox* intersects the
+    requested one, and countries crossing the antimeridian (Russia via Chukotka, the
+    US via the Aleutians) have a bbox spanning all longitudes — so their country
+    polygon lands in division_areas even though nothing else of theirs does (0
+    localities). Picking them wastes the attempt for every template, and for
+    `bordering` (whole country polygon as reference, ~200k points, globe-wide bbox)
+    it was what OOM-killed the run.
     """
     rows = con.execute(
         """
@@ -239,6 +261,7 @@ def fetch_countries(con: duckdb.DuckDBPyConnection) -> list[Country]:
                ST_XMin(geometry), ST_XMax(geometry), ST_YMin(geometry), ST_YMax(geometry)
         FROM division_areas
         WHERE subtype = 'country'
+          AND country IN (SELECT DISTINCT country FROM divisions WHERE subtype = 'locality')
         """
     ).fetchall()
     return [Country(*r) for r in rows]
@@ -608,28 +631,42 @@ def sample_left_right_bank(con, c: Country) -> dict | None:
     }
 
 
-# ── Template 10: Bordering a place (draft, not yet tested — see TEMPLATES.md) ──
+# ── Template 10: Bordering a place (see TEMPLATES.md) ──────────────────────
+# The reference is a whole country polygon, which made the naive query blow up:
+# Russia/US polygons (~200k points) cross the antimeridian, so their bbox spans the
+# globe and all ~977k localities passed the prefilter; ST_Boundary(area) was then
+# recomputed twice per row and every row was sorted by random() — one attempt hit
+# ~62 GB RSS and got OOM-killed well inside QUERY_TIMEOUT_S. So the boundary is
+# computed once (MATERIALIZED), and only WATER_CANDIDATES random bbox localities
+# go through the exact ST_ClosestPoint check (same idea as WATER_CANDIDATES):
+# worst case (Russia) ~1s / ~2 GB.
 def sample_bordering(con, c: Country) -> dict | None:
-    bbox = BBOX_SQL.format(geom="area", dist_m=20000)
+    bbox = BBOX_SQL.format(geom="geometry", dist_m=20000)
     row = con.execute(
         f"""
-        WITH ref AS (SELECT name, geometry FROM division_areas WHERE id = ?),
-        bbox AS (
-            SELECT name, geometry AS area, {bbox} AS box
-            FROM ref
+        WITH ref AS MATERIALIZED (
+            SELECT name, ST_Boundary(geometry) AS boundary, {bbox} AS box
+            FROM division_areas
+            WHERE id = ?
+        ),
+        candidates AS MATERIALIZED (
+            SELECT d.name, d.geometry
+            FROM ref, divisions d
+            WHERE d.subtype = 'locality'
+              AND d.name IS NOT NULL
+              AND ST_Intersects(d.geometry, ref.box)
+            ORDER BY random() LIMIT {WATER_CANDIDATES}
         )
-        SELECT bbox.name, d.name
-        FROM bbox, divisions d
-        WHERE d.subtype = 'locality'
-          AND ST_Intersects(d.geometry, bbox.box)
-          AND ST_DWithin_Spheroid(
-                  ST_Point2D(ST_X(d.geometry), ST_Y(d.geometry)),
+        SELECT ref.name, cand.name
+        FROM ref, candidates cand
+        WHERE ST_DWithin_Spheroid(
+                  ST_Point2D(ST_X(cand.geometry), ST_Y(cand.geometry)),
                   ST_Point2D(
-                      ST_X(ST_ClosestPoint(ST_Boundary(bbox.area), d.geometry)),
-                      ST_Y(ST_ClosestPoint(ST_Boundary(bbox.area), d.geometry))
+                      ST_X(ST_ClosestPoint(ref.boundary, cand.geometry)),
+                      ST_Y(ST_ClosestPoint(ref.boundary, cand.geometry))
                   ),
                   20000)
-        ORDER BY random() LIMIT 1
+        LIMIT 1
         """,
         [c.id],
     ).fetchone()

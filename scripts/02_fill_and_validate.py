@@ -20,7 +20,7 @@ STEP 4 "Decisions").
 
 Run:
     uvx --with duckdb python3 scripts/02_fill_and_validate.py
-    uvx --with duckdb python3 scripts/02_fill_and_validate.py --in data/samples/entities.jsonl --out data/samples/validated.jsonl
+    uvx --with duckdb python3 scripts/02_fill_and_validate.py --in data/samples/entities.jsonl --out data/samples/validated_samples.jsonl
 """
 
 import argparse
@@ -288,8 +288,8 @@ def build_bordering(p: dict) -> str:
             WHERE ({name_match_bare(p['place'])})
             LIMIT 1
         ),
-        bbox AS (
-            SELECT geometry AS area,
+        bbox AS MATERIALIZED (
+            SELECT ST_Boundary(geometry) AS border,
                    ST_Expand(
                      ST_Envelope(geometry),
                      {p['distance_m']} / (111320.0 * cos(radians(
@@ -304,7 +304,7 @@ def build_bordering(p: dict) -> str:
           AND ST_Intersects(d.geometry, bbox.box)
           AND ST_DWithin_Spheroid(
                 ST_Point2D(ST_X(d.geometry), ST_Y(d.geometry)),
-                ST_Point2D(ST_X(ST_ClosestPoint(ST_Boundary(bbox.area), d.geometry)), ST_Y(ST_ClosestPoint(ST_Boundary(bbox.area), d.geometry))),
+                ST_Point2D(ST_X(ST_ClosestPoint(bbox.border, d.geometry)), ST_Y(ST_ClosestPoint(bbox.border, d.geometry))),
                 {p['distance_m']})
     """
 
@@ -420,7 +420,7 @@ def connect(threads: int = 2) -> duckdb.DuckDBPyConnection:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--in", dest="in_path", default="data/samples/entities.jsonl")
-    parser.add_argument("--out", dest="out_path", default="data/samples/validated.jsonl")
+    parser.add_argument("--out", dest="out_path", default="data/samples/validated_samples.jsonl")
     parser.add_argument(
         "--threads",
         type=int,

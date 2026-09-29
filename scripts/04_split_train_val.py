@@ -3,8 +3,8 @@
 
 `dataset.jsonl` only contains `{question, sql}` (DESIGN.md: "the dataset contains only
 {question, sql}"), with no template info to stratify by. This script recovers it by
-looking each row's `sql` up in `validated.jsonl` (every dataset.jsonl row was
-generated from a validated.jsonl row, and `sql` is unique per (template, params)
+looking each row's `sql` up in `validated_samples.jsonl` (every dataset.jsonl row was
+generated from a validated_samples.jsonl row, and `sql` is unique per (template, params)
 pair) — no need to re-run question generation.
 
 Stratified by template, not a plain random split: a random split could by chance
@@ -34,6 +34,7 @@ Run:
 import argparse
 import json
 import random
+import sys
 from collections import defaultdict
 
 
@@ -49,7 +50,7 @@ def load_sql_to_template(validated_path: str) -> dict[str, str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", default="data/samples/dataset.jsonl")
-    parser.add_argument("--validated", default="data/samples/validated.jsonl")
+    parser.add_argument("--validated", default="data/samples/validated_samples.jsonl")
     parser.add_argument("--train-out", default="data/samples/train.jsonl")
     parser.add_argument("--val-out", default="data/samples/val.jsonl")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="fraction of distinct SQL queries held out per template for validation (all their questions go to val)")
@@ -67,8 +68,8 @@ def main() -> None:
             template = sql_to_template.get(row["sql"])
             if template is None:
                 # Shouldn't happen in normal use (every dataset.jsonl row comes from
-                # validated.jsonl) — falls back to an "_unknown" bucket rather than
-                # crashing, e.g. if dataset.jsonl and validated.jsonl are out of sync.
+                # validated_samples.jsonl) — falls back to an "_unknown" bucket rather than
+                # crashing, e.g. if dataset.jsonl and validated_samples.jsonl are out of sync.
                 unknown += 1
                 template = "_unknown"
             by_template[template][row["sql"]].append(row)
@@ -102,10 +103,28 @@ def main() -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     print(f"# {len(train_rows)} train, {len(val_rows)} val, {len(by_template)} templates"
-          + (f", {unknown} unmatched rows (dataset.jsonl/validated.jsonl out of sync?)" if unknown else ""))
+          + (f", {unknown} unmatched rows (dataset.jsonl/validated_samples.jsonl out of sync?)" if unknown else ""))
     for template, (n_sql, n_val_sql, n_train, n_val) in sorted(per_template_counts.items()):
         print(f"#   {template}: {n_sql} SQL -> {n_sql - n_val_sql} train / {n_val_sql} val "
               f"({n_train} / {n_val} pairs)")
+
+    # A template with a single distinct SQL can't be split (see n_val above): it goes
+    # entirely to train and is invisible to evaluation. Typically a too-small --rows
+    # at sampling (e.g. ROWS=10 over 15 templates -> 1 entity per template).
+    single = sorted(t for t, (n_sql, _, _, _) in per_template_counts.items() if n_sql <= 1)
+    if not val_rows:
+        print(
+            f"# WARNING: {args.val_out} is EMPTY — every template has at most 1 distinct SQL, "
+            "so nothing could be held out. Resample with more rows (at least ~2 validated SQL "
+            "per template, e.g. make generate-dataset ROWS=150).",
+            file=sys.stderr,
+        )
+    elif single:
+        print(
+            f"# WARNING: {len(single)} template(s) with only 1 distinct SQL, entirely in train "
+            f"(no val coverage): {', '.join(single)}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

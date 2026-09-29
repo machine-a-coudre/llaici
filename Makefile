@@ -50,15 +50,15 @@ merge-samples:
 # STEP 4: fill templates with sampled entities and validate by execution (see scripts/02_fill_and_validate.py)
 validate-samples:
 	$(PRINT_THREADS)
-	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated.jsonl --threads $(THREADS)
+	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated_samples.jsonl --threads $(THREADS)
 
 # STEP 4: generate NL question formulations (FR+EN) for validated pairs -> dataset.jsonl (see scripts/03_generate_questions.py)
 generate-questions:
-	python3 scripts/03_generate_questions.py --in $(SAMPLES_DIR)/validated.jsonl --out $(SAMPLES_DIR)/dataset.jsonl $(if $(MAX_PER_TEMPLATE),--max-per-template $(MAX_PER_TEMPLATE))
+	python3 scripts/03_generate_questions.py --in $(SAMPLES_DIR)/validated_samples.jsonl --out $(SAMPLES_DIR)/dataset.jsonl $(if $(MAX_PER_TEMPLATE),--max-per-template $(MAX_PER_TEMPLATE))
 
 # STEP 5 (fine-tuning) prep, step 1c: split dataset.jsonl into train/val, stratified by template (see FINETUNING.md, scripts/04_split_train_val.py)
 split-dataset:
-	python3 scripts/04_split_train_val.py --dataset $(SAMPLES_DIR)/dataset.jsonl --validated $(SAMPLES_DIR)/validated.jsonl --train-out $(SAMPLES_DIR)/train.jsonl --val-out $(SAMPLES_DIR)/val.jsonl $(if $(VAL_RATIO),--val-ratio $(VAL_RATIO))
+	python3 scripts/04_split_train_val.py --dataset $(SAMPLES_DIR)/dataset.jsonl --validated $(SAMPLES_DIR)/validated_samples.jsonl --train-out $(SAMPLES_DIR)/train.jsonl --val-out $(SAMPLES_DIR)/val.jsonl $(if $(VAL_RATIO),--val-ratio $(VAL_RATIO))
 
 # STEP 5 (fine-tuning) prep, steps 1a/1b: format train/val pairs as Qwen chat messages (see FINETUNING.md, scripts/05_format_for_training.py)
 format-for-training:
