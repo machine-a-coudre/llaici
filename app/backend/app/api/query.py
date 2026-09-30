@@ -24,6 +24,9 @@ async def health() -> dict:
 async def query(payload: QueryRequest) -> QueryResponse:
     try:
         sql = await llm.generate_sql(payload.question)
+    except llm.TruncatedOutputError as e:
+        # 422, not 502: llama-server answered fine, the model's output is unusable.
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}") from e
 

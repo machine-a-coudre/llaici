@@ -58,8 +58,9 @@ validate-samples:
 	uvx --with duckdb python3 scripts/02_fill_and_validate.py --in $(SAMPLES_DIR)/entities.jsonl --out $(SAMPLES_DIR)/validated_samples.jsonl --threads $(THREADS) $(if $(LOCAL_NAME_RATIO),--local-name-ratio $(LOCAL_NAME_RATIO))
 
 # STEP 4: generate NL question formulations (FR+EN) for validated pairs -> dataset.jsonl (see scripts/03_generate_questions.py)
+# MAX_PER_TEMPLATE caps pairs per template; NO_ACCENT_RATIO (default 0.3) = share of accented questions also copied without accents
 generate-questions:
-	python3 scripts/03_generate_questions.py --in $(SAMPLES_DIR)/validated_samples.jsonl --out $(SAMPLES_DIR)/dataset.jsonl $(if $(MAX_PER_TEMPLATE),--max-per-template $(MAX_PER_TEMPLATE))
+	python3 scripts/03_generate_questions.py --in $(SAMPLES_DIR)/validated_samples.jsonl --out $(SAMPLES_DIR)/dataset.jsonl $(if $(MAX_PER_TEMPLATE),--max-per-template $(MAX_PER_TEMPLATE)) $(if $(NO_ACCENT_RATIO),--no-accent-ratio $(NO_ACCENT_RATIO))
 
 # STEP 5 (fine-tuning) prep, step 1c: split dataset.jsonl into train/val, stratified by template (see FINETUNING.md, scripts/04_split_train_val.py)
 split-dataset:

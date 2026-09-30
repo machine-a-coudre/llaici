@@ -57,14 +57,18 @@ def esc(value: str) -> str:
 
 
 def name_match(alias: str, term: str) -> str:
+    """Case- and accent-insensitive name match: ILIKE ignores case, strip_accents on
+    both sides ignores accents, so a user typing "Seville" finds "Séville" (step 03
+    generates such accent-less questions). The term is kept exactly as typed in the
+    question, so the model only ever copies it — it never has to strip accents itself."""
     term = esc(term)
-    return " OR ".join(f"{alias}.{col} ILIKE '%{term}%'" for col in NAME_COLUMNS)
+    return " OR ".join(f"strip_accents({alias}.{col}) ILIKE strip_accents('%{term}%')" for col in NAME_COLUMNS)
 
 
 def name_match_bare(term: str) -> str:
     """Same as name_match, but for a CTE with no table alias (templates #3, #8, left/right bank)."""
     term = esc(term)
-    return " OR ".join(f"{col} ILIKE '%{term}%'" for col in NAME_COLUMNS)
+    return " OR ".join(f"strip_accents({col}) ILIKE strip_accents('%{term}%')" for col in NAME_COLUMNS)
 
 
 def azimuth_expr() -> str:

@@ -18,6 +18,10 @@ Since step 02 swaps local names for exonyms ("España" → "Espagne"), the missi
 - A few genders depend on the exact FR name Overture uses (CD, CG, MM): check them if those countries show up.
 - Rivers still get no article ("le long de Seine"), and EN has the same issue in smaller form ("show me Netherlands").
 
+### Questions typed without accents fail ("ponts pres de Madrid")
+
+The dataset only had correctly accented questions, so for the model "pres" was an unknown word, and the SQL's `ILIKE '%Seville%'` wouldn't have matched "Séville" anyway. Fixed: step 02's name match is accent-insensitive (`strip_accents` on both sides), and step 03 adds accent-less copies of a share of the questions (`NO_ACCENT_RATIO`, default 0.3). Needs steps 02-05 re-run (not 01) and a new training: existing SQL doesn't have `strip_accents`.
+
 ### `ROWS` is not the number of training pairs
 
 `ROWS` is the number of sampled *entities*, split evenly across templates. Each entity yields ~3-4 (question, SQL) pairs (FR + EN, several phrasings), minus what steps 02/03 filter out. Observed: `ROWS=50` → 45 entities → 167 pairs. So `ROWS=70000` gives roughly 230k pairs, not 70k — about 7x longer training than `DESIGN.md`'s "30 min - 1 h for ~70k pairs" estimate (which rather matches `ROWS≈20000`). Use `MAX_PER_TEMPLATE` to cap the volume, and try an intermediate size (e.g. `ROWS=5000`) to measure real timings first.
@@ -114,3 +118,28 @@ The `Cache check failed: tokenizer.model not found in local cache` line of that 
 ### `convert_hf_to_gguf.py` fails with `ModuleNotFoundError`
 
 The converter runs with the fine-tuning venv's Python, which has `torch`, `transformers` and `numpy` but maybe not everything llama.cpp's converter imports. Install its requirements into the venv: `uv pip install --python .venv-finetune/bin/python -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt`. If that tries to change the `torch` version, install only the missing module the error named instead.
+
+---
+
+## Demo app
+
+### The map stays blank: `GPUInitializationError: WebGL2 is required to display this map`
+
+MapLibre GL 6 draws the map with **WebGL2**, and the browser doesn't provide it: hardware acceleration is turned off, or the browser has blocklisted the GPU driver (common on Linux, especially with NVIDIA drivers). Nothing to do with the project or the model; the page is blank from the first load, before any question.
+
+1. **Check**: `chrome://gpu` (Chrome/Chromium, "WebGL2" line) or `about:support` (Firefox, "Graphics" section).
+2. **Enable**:
+   - Chrome/Chromium: Settings → System → "Use graphics acceleration when available", restart. If still disabled: `chrome://flags` → "Override software rendering list" (`#ignore-gpu-blocklist`), restart.
+   - Firefox: `about:config` → `webgl.disabled` = `false`; if still disabled, `webgl.force-enabled` = `true`, restart.
+3. **Verify** at https://get.webgl.org/webgl2/ (a spinning cube), then hard-reload the app (`Ctrl+Shift+R`).
+
+Still failing: try another browser (they don't share the same driver blocklist) or update the GPU driver.
+
+### "The model's answer was cut off after 1024 tokens without finishing"
+
+The model never ended its answer: under greedy decoding (the app asks for `temperature=0`), an under-trained model often falls into a repetition loop (e.g. the same `list_contains(...)` condition over and over) until it hits the token limit. The backend reports that instead of running the cut-off SQL, which would only fail with a confusing DuckDB syntax error. Checked on the small test model: the same loop happens with the original base model + adapter (no GGUF conversion) and with the exact training prompt format, so it's the model, not the integration. Fix: train on more data.
+
+### A question that "worked" during evaluation fails in the app
+
+Evaluation results produced before `07_evaluate.py` switched to greedy decoding came from *random sampling*: a success there could be luck. The app always decodes greedily, like the current evaluation. Re-run `make evaluate` for a score that matches what the app will do.
+

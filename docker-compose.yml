@@ -25,9 +25,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # host.docker.internal: Docker Desktop's DNS name for the host machine —
-      # llama-server runs on the host (see app/README.md), not in a container.
+      # host.docker.internal: DNS name for the host machine — llama-server runs on
+      # the host (see app/README.md), not in a container.
       LLAMA_SERVER_URL: http://host.docker.internal:8080/v1
+    extra_hosts:
+      # Docker Desktop (Mac/Windows) defines host.docker.internal by itself; Docker
+      # Engine on Linux doesn't, so map it to the host explicitly.
+      - "host.docker.internal:host-gateway"
 
   frontend:
     build: ./app/frontend

@@ -24,22 +24,35 @@ result on a map. Three pieces, run together:
 
 ## Run everything
 
-```bash
-# 1. llama-server (separate terminal) — needs a GGUF model from scripts/08_merge_and_quantize.py
-llama-server -m models/llaici-qwen3-0.6b-gguf/<file>.gguf --port 8080
+**1. llama-server, on the host** (not in Docker). It serves exactly one GGUF, the one given with `-m`; there's no model list to configure. It comes from [llama.cpp](https://github.com/ggml-org/llama.cpp), built from the clone step 08 already uses (a CPU build is plenty for a 0.6B model; add `-DGGML_CUDA=ON` for GPU, which needs the CUDA toolkit):
 
-# 2. backend (separate terminal, from the REPO ROOT — see backend/README.md)
+```bash
+cmake -S ~/llama.cpp -B ~/llama.cpp/build && cmake --build ~/llama.cpp/build --config Release -j --target llama-server   # once
+~/llama.cpp/build/bin/llama-server -m models/llaici-qwen3-0.6b-gguf/llaici-qwen3-0.6b.q8_0.gguf --port 8080 --host 0.0.0.0 --jinja
+```
+
+- `--jinja`: applies the chat template embedded in the GGUF (the one the model was trained with).
+- `--host 0.0.0.0`: the backend container reaches the host through Docker's bridge, so llama-server can't listen on `127.0.0.1` only (its default). This also exposes it on your local network: fine for a local test, or use `--host 172.17.0.1` (the `docker0` address) to stay off the LAN.
+
+**2. Backend + frontend, in Docker**: stop the DuckDB UI container first (`make down`: it holds a write lock on the database), then:
+
+```bash
+make app-up          # or make app-build-up after changing requirements/Dockerfiles
+```
+
+Then open `http://localhost:5173` in a browser with **WebGL2** enabled (required by MapLibre GL 6, see "The map stays blank" in `docs/TROUBLESHOOTING.md`). The backend reaches llama-server at `http://host.docker.internal:8080/v1` (`LLAMA_SERVER_URL` in `docker-compose.yml`), mapped to the host on Linux too (`extra_hosts`).
+
+**Without Docker**, for the backend and frontend:
+
+```bash
+# backend (from the REPO ROOT — see backend/README.md)
 python3 -m venv app/backend/.venv && source app/backend/.venv/bin/activate
 pip install -r app/backend/requirements.txt
 uvicorn app.main:app --app-dir app/backend --reload --port 8000
 
-# 3. frontend (separate terminal)
-cd app/frontend
-npm install   # already run once during development — see below
-npm run dev
+# frontend
+cd app/frontend && npm install && npm run dev
 ```
-
-Then open the Vite dev server URL (typically `http://localhost:5173`).
 
 ## Status
 

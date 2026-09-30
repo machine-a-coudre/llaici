@@ -23,6 +23,8 @@ Run:
 
 import argparse
 import json
+import random
+import unicodedata
 
 # Human-readable (EN, FR) plural labels for the (subtype, class) categories kept in
 # the `infrastructures` view (see scripts/00_init.sql). Fallback for anything missing:
@@ -313,6 +315,11 @@ def build_questions(template: str, params: dict, lang: str) -> list[str]:
     return [p.format(**fields) for p in PHRASES[template][lang]]
 
 
+def strip_accents(text: str) -> str:
+    """"villes près de Séville" -> "villes pres de Seville" (also ñ -> n, ç -> c...)."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--in", dest="in_path", default="data/samples/validated_samples.jsonl")
@@ -323,7 +330,16 @@ def main() -> None:
         default=None,
         help="cap pairs kept per template after dedup, so no single template dominates the dataset (default: no cap)",
     )
+    parser.add_argument(
+        "--no-accent-ratio",
+        type=float,
+        default=0.3,
+        help="share of accented questions that also get an accent-less copy, same SQL "
+        "(users often type 'pres de Seville'; the SQL's strip_accents match finds 'Séville' anyway)",
+    )
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+    rng = random.Random(args.seed)
 
     # Collect (template, question, sql) before writing, so dedup/balance (DESIGN.md STEP 4
     # "Decisions") can run on the full set — both need `template`, which the final
@@ -331,16 +347,23 @@ def main() -> None:
     by_template: dict[str, list[tuple[str, str]]] = {}
     seen: set[tuple[str, str]] = set()
     duplicates = 0
+    no_accent_variants = 0
     with open(args.in_path, encoding="utf-8") as fin:
         for line in fin:
             row = json.loads(line)
             for question in build_questions(row["template"], row["params"], row["lang"]):
-                pair = (question, row["sql"])
-                if pair in seen:
-                    duplicates += 1
-                    continue
-                seen.add(pair)
-                by_template.setdefault(row["template"], []).append(pair)
+                variants = [question]
+                plain = strip_accents(question)
+                if plain != question and rng.random() < args.no_accent_ratio:
+                    variants.append(plain)
+                    no_accent_variants += 1
+                for variant in variants:
+                    pair = (variant, row["sql"])
+                    if pair in seen:
+                        duplicates += 1
+                        continue
+                    seen.add(pair)
+                    by_template.setdefault(row["template"], []).append(pair)
 
     capped = 0
     pairs_written = 0
@@ -352,6 +375,7 @@ def main() -> None:
                 fout.write(json.dumps({"question": question, "sql": sql}, ensure_ascii=False) + "\n")
                 pairs_written += 1
 
+    print(f"# {no_accent_variants} accent-less question variants added (--no-accent-ratio {args.no_accent_ratio})")
     print(f"# {pairs_written} (question, sql) pairs written to {args.out_path} "
           f"({duplicates} exact duplicates dropped, {capped} dropped by --max-per-template)")
 

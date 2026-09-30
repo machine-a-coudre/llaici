@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
 // maplibre-gl v6 dropped its default export (named exports only) — MapLibreMap
 // is the library's own alias for `Map`, to avoid shadowing JS's built-in Map.
-import { GeoJSONSource, LngLatBounds, MapLibreMap, NavigationControl } from 'maplibre-gl'
+import { GeoJSONSource, LngLatBounds, MapLibreMap, NavigationControl, Popup } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 const props = defineProps<{
@@ -12,9 +12,12 @@ const props = defineProps<{
 const mapContainer = shallowRef<HTMLDivElement | null>(null)
 let map: MapLibreMap | null = null
 let resizeObserver: ResizeObserver | null = null
+let popup: Popup | null = null
 
 const SOURCE_ID = 'llaici-results'
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] }
+// Topmost first: a point drawn over a polygon wins the click.
+const CLICKABLE_LAYERS = [`${SOURCE_ID}-points`, `${SOURCE_ID}-lines`, `${SOURCE_ID}-polygons`]
 
 onMounted(() => {
   if (!mapContainer.value) return
@@ -101,11 +104,63 @@ onMounted(() => {
       },
     })
 
+    // Click on a result -> popup with its properties. MapLibre's Popup has a
+    // close button (×) and also closes when clicking elsewhere on the map.
+    map.on('click', (e) => {
+      if (!map) return
+      const feature = map.queryRenderedFeatures(e.point, { layers: CLICKABLE_LAYERS })[0]
+      if (!feature) return
+      popup?.remove()
+      popup = new Popup({ closeButton: true, closeOnClick: true, maxWidth: '320px', className: 'llaici-popup' })
+        .setLngLat(e.lngLat)
+        .setDOMContent(buildPopupContent(feature.properties ?? {}))
+        .addTo(map)
+    })
+    for (const layer of CLICKABLE_LAYERS) {
+      map.on('mouseenter', layer, () => map && (map.getCanvas().style.cursor = 'pointer'))
+      map.on('mouseleave', layer, () => map && (map.getCanvas().style.cursor = ''))
+    }
+
     updateData(props.geojson)
   })
 })
 
+const isEmpty = (value: unknown) => value === null || value === undefined || value === ''
+
+/** Popup body: the feature's name as title, then its properties — `id` and `name`
+ * always (an empty name is shown as such: many Overture features, e.g. most bus
+ * stops or bridges, have none), any other non-empty column after. Built with
+ * textContent, never innerHTML — names come from Overture data, not from us. */
+function buildPopupContent(properties: Record<string, unknown>): HTMLElement {
+  const root = document.createElement('div')
+  const title = document.createElement('h3')
+  title.textContent = isEmpty(properties.name) ? 'Unnamed' : String(properties.name)
+  root.appendChild(title)
+
+  const table = document.createElement('table')
+  const addRow = (key: string, value: unknown) => {
+    const row = table.insertRow()
+    row.insertCell().textContent = key
+    const cell = row.insertCell()
+    if (isEmpty(value)) {
+      cell.textContent = '(empty)'
+      cell.className = 'empty'
+    } else {
+      // MapLibre serializes nested values (lists, structs) to JSON strings already.
+      cell.textContent = typeof value === 'object' ? JSON.stringify(value) : String(value)
+    }
+  }
+  addRow('id', properties.id)
+  addRow('name', properties.name)
+  for (const [key, value] of Object.entries(properties)) {
+    if (key !== 'id' && key !== 'name' && !isEmpty(value)) addRow(key, value)
+  }
+  root.appendChild(table)
+  return root
+}
+
 onBeforeUnmount(() => {
+  popup?.remove()
   resizeObserver?.disconnect()
   resizeObserver = null
   map?.remove()
@@ -119,6 +174,9 @@ function updateData(featureCollection: GeoJSON.FeatureCollection | null) {
 
   const data = featureCollection ?? EMPTY_FC
   source.setData(data)
+  // A popup left open would describe a feature from the previous answer.
+  popup?.remove()
+  popup = null
 
   if (data.features.length === 0) return
 
@@ -186,5 +244,43 @@ watch(
 .map-container {
   width: 100%;
   height: 100%;
+}
+</style>
+
+<!-- Not scoped: MapLibre builds the popup's DOM itself, outside this component's
+     scoped-style reach. Namespaced by the .llaici-popup class instead. -->
+<style>
+.llaici-popup .maplibregl-popup-content {
+  padding: 12px 14px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.llaici-popup .maplibregl-popup-close-button {
+  font-size: 18px;
+  padding: 0 6px;
+}
+.llaici-popup h3 {
+  margin: 0 18px 8px 0;
+  font-size: 15px;
+}
+.llaici-popup table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.llaici-popup td {
+  padding: 3px 6px;
+  border-top: 1px solid #eee;
+  vertical-align: top;
+  word-break: break-word;
+}
+.llaici-popup td:first-child {
+  color: #666;
+  white-space: nowrap;
+}
+.llaici-popup td.empty {
+  color: #999;
+  font-style: italic;
 }
 </style>

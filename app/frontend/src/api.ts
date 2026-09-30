@@ -26,9 +26,8 @@ export async function askQuestion(question: string): Promise<QueryResponse> {
 
 // Temporary: hits the backend's canned "/query/mock" (always a single point in
 // Bilbao) — lets the map's highlight/zoom behavior be built and tested without
-// a running llama-server or fine-tuned model (see FINETUNING.md status). App.vue
-// currently calls this instead of askQuestion; switch back once the real
-// pipeline works end to end.
+// a running llama-server or fine-tuned model. App.vue now calls askQuestion (the
+// real pipeline); kept as a dev fixture for map work without llama-server.
 export async function askQuestionMock(question: string): Promise<QueryResponse> {
   return postQuery('/query/mock', question)
 }

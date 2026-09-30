@@ -124,3 +124,6 @@ make app-up
 ```
 
 See [`app/README.md`](app/README.md) for the full picture, including how to run `llama-server` alongside it.
+
+> [!IMPORTANT]
+> The map needs a browser with **WebGL2** (MapLibre GL 6 requires it). Without it the page stays blank and the browser console shows `GPUInitializationError: WebGL2 is required to display this map`. This usually means hardware acceleration is off or the GPU driver is blocklisted (common on Linux): enable hardware acceleration in the browser settings, then check at https://get.webgl.org/webgl2/. Details in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).

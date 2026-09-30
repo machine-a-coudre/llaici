@@ -59,6 +59,16 @@ WITH bbox AS (
 
 Not needed for templates joining only against `divisions` (always a point — no multi-vertex geometry to make the exact check expensive) or when the name filter already narrows the join to one specific row (e.g. `division_areas` for a single named city in template #1/#4/#5, tested fine without it).
 
+## Name matching: case- and accent-insensitive
+
+The templates below show name filters as `name ILIKE '%{place}%'` for readability. The SQL actually generated (`02_fill_and_validate.py`, `name_match()`) wraps both sides in `strip_accents`:
+
+```sql
+strip_accents(da.name) ILIKE strip_accents('%{place}%') OR strip_accents(da.name_fr) ILIKE strip_accents('%{place}%') ...
+```
+
+`ILIKE` already ignores case; `strip_accents` makes "Seville" match "Séville" and "cordoba" match "Córdoba", since users often type without accents (step 03 generates such questions). The term stays exactly as typed in the question, so the model only copies it and never has to strip accents itself. Cost: longer SQL (~+50 tokens per name match), and `strip_accents` evaluated on every scanned name — not benchmarked.
+
 ## Distance and angle conventions
 
 - All user-facing distances ("5km", "500m", "5 miles") must be normalized to meters before being substituted into a template (DESIGN.md STEP 3).

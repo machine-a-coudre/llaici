@@ -5,8 +5,10 @@ data/samples/
 data/training/
 data/samples_copy/
 
-# Fine-tuning outputs (scripts/06-08, see FINETUNING.md)
-models/
+# Fine-tuning outputs (scripts/06-08, see FINETUNING.md). Anchored to the repo
+# root: a bare "models/" also matched app/backend/app/models/ (the API schemas),
+# which then never got committed.
+/models/
 # Unsloth's patched-trainer cache, regenerated in the cwd on every `import unsloth`
 unsloth_compiled_cache/
 

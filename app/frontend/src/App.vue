@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import MapView from './components/MapView.vue'
 import PromptPanel from './components/PromptPanel.vue'
-import { askQuestionMock } from './api'
+import { askQuestion } from './api'
 import { loadHistory, saveHistory } from './history'
 import type { HistoryEntry, QueryResponse } from './types'
 
@@ -22,9 +22,7 @@ async function handleSubmit(submittedQuestion: string) {
   loading.value = true
   error.value = null
   try {
-    // TEMPORARY: using the mock endpoint until a real llama-server + fine-tuned
-    // model exist (see FINETUNING.md status) — swap for askQuestion once they do.
-    const result: QueryResponse = await askQuestionMock(submittedQuestion)
+    const result: QueryResponse = await askQuestion(submittedQuestion)
     geojson.value = result.geojson
     sql.value = result.sql
     featureCount.value = result.feature_count
