@@ -34,8 +34,11 @@ Run (on a CUDA machine, after scripts/06_finetune.py has produced an adapter):
 
 import argparse
 import json
+import multiprocessing as mp
+import queue
 import random
 import re
+import time
 from pathlib import Path
 
 from console import print_box
@@ -49,6 +52,13 @@ FAIR_MATCH_PCT = 50
 # Below this many training examples, "train on more data" is the first advice.
 SMALL_TRAIN_SET = 5000
 TRAIN_FILE = "data/training/train_formatted.jsonl"
+# Per-query time limits. The gold query runs first and is timed; the generated one
+# gets TIMEOUT_FACTOR x that time (at least --query-timeout): a correct query takes
+# about as long as the gold one, one taking 5x longer is badly filtered (e.g. a
+# spatial join over a whole table). A fixed limit would either be too short for the
+# heavy templates (left/right bank, along: computed over `water`) or too long for
+# the light ones.
+TIMEOUT_FACTOR = 5
 
 DB_PATH = "data/db/llaici.duckdb"
 
@@ -67,6 +77,50 @@ def connect(threads: int = 2):
     con.execute("INSTALL spatial")  # no-op once installed; host runs lack the image's pre-install
     con.execute("LOAD spatial")
     return con
+
+
+def _query_worker(threads: int, requests, results) -> None:
+    con = connect(threads)
+    results.put("ready")
+    while (sql := requests.get()) is not None:
+        results.put(result_ids(con, sql))
+
+
+class QueryRunner:
+    """Runs SQL in a child process, killed and restarted on timeout.
+
+    con.interrupt() isn't enough: DuckDB only checks for it at some internal
+    checkpoints, which some spatial queries don't reach for minutes — same finding
+    as scripts/01_sample_entities.py, which kills its attempts the same way."""
+
+    def __init__(self, threads: int):
+        self.threads = threads
+        # spawn, not fork: the parent has CUDA initialized, which isn't fork-safe.
+        self.ctx = mp.get_context("spawn")
+        self._start()
+
+    def _start(self) -> None:
+        self.requests, self.results = self.ctx.Queue(), self.ctx.Queue()
+        self.proc = self.ctx.Process(target=_query_worker, args=(self.threads, self.requests, self.results), daemon=True)
+        self.proc.start()
+        self.results.get()  # "ready": connection + spatial loaded, not counted in any timeout
+
+    def run(self, sql: str, timeout: float) -> tuple[str, set[str] | None, float]:
+        """(status, ids, seconds) — status "timeout" if the query didn't finish in time."""
+        start = time.monotonic()
+        self.requests.put(sql)
+        try:
+            status, ids = self.results.get(timeout=timeout)
+        except queue.Empty:
+            self.proc.kill()
+            self.proc.join()
+            self._start()
+            return "timeout", None, time.monotonic() - start
+        return status, ids, time.monotonic() - start
+
+    def close(self) -> None:
+        self.requests.put(None)
+        self.proc.join(timeout=5)
 
 
 def extract_sql(generated_text: str) -> str:
@@ -141,6 +195,15 @@ def main() -> None:
         "a representative score in a fraction of the time (default: all)",
     )
     parser.add_argument("--seed", type=int, default=42, help="for --max-examples: same seed, same sample")
+    parser.add_argument(
+        "--query-timeout", type=float, default=30,
+        help=f"minimum time limit (s) for a generated query; the actual limit is {TIMEOUT_FACTOR}x the gold "
+        "query's time when that's longer. Past it, the answer counts as 'too slow'",
+    )
+    parser.add_argument(
+        "--gold-timeout", type=float, default=300,
+        help="time limit (s) for the gold query; past it, the question is skipped (not the model's fault)",
+    )
     args = parser.parse_args()
     args.adapter_dir = args.adapter_dir or model_dir(args.model_name, "lora")
     args.out = args.out or f"{args.adapter_dir}/eval_results.jsonl"
@@ -165,10 +228,11 @@ def main() -> None:
     gen_config.temperature = gen_config.top_p = gen_config.top_k = None
     gen_config.max_length = None
 
-    con = connect(args.threads)
+    runner = QueryRunner(args.threads)
 
-    counts = {"syntax_error": 0, "empty": 0, "ok_mismatch": 0, "ok_match": 0}
+    counts = {"syntax_error": 0, "empty": 0, "timeout": 0, "ok_mismatch": 0, "ok_match": 0}
     truncated = 0
+    skipped = 0
     with open(args.val_file, encoding="utf-8") as fin:
         val_rows = [json.loads(line) for line in fin]
     args.val_total = len(val_rows)
@@ -179,37 +243,54 @@ def main() -> None:
         print(f"# evaluating a random sample of {len(val_rows)} of {args.val_total} validation questions (--max-examples)")
 
     with open(args.out, "w", encoding="utf-8") as fout:
-        for row in val_rows:
-            question, gold_sql = row["question"], row["sql"]
+        try:
+            for row in val_rows:
+                question, gold_sql = row["question"], row["sql"]
+                # Gold first: its time sets the generated query's limit.
+                gold_status, gold_ids, gold_s = runner.run(gold_sql, args.gold_timeout)
+                generated_sql, was_truncated = generate_sql(model, tokenizer, question, args.max_new_tokens)
+                truncated += was_truncated
 
-            generated_sql, was_truncated = generate_sql(model, tokenizer, question, args.max_new_tokens)
-            truncated += was_truncated
-            gen_status, gen_ids = result_ids(con, generated_sql)
-            gold_status, gold_ids = result_ids(con, gold_sql)
+                gen_status, gen_s = "not run", None
+                if gold_status != "ok":
+                    # Too slow, or no longer valid against the current data: can't be
+                    # scored, and it's not the model's fault — left out of the score.
+                    bucket = "skipped"
+                    skipped += 1
+                else:
+                    gen_timeout = max(args.query_timeout, TIMEOUT_FACTOR * gold_s)
+                    gen_status, gen_ids, gen_s = runner.run(generated_sql, gen_timeout)
+                    if gen_status == "timeout":
+                        bucket = "timeout"
+                    elif gen_status.startswith("syntax_error"):
+                        bucket = "syntax_error"
+                    elif gen_status == "empty":
+                        bucket = "empty"
+                    elif gen_ids == gold_ids:
+                        bucket = "ok_match"
+                    else:
+                        bucket = "ok_mismatch"
+                    counts[bucket] += 1
 
-            if gen_status.startswith("syntax_error"):
-                bucket = "syntax_error"
-            elif gen_status == "empty":
-                bucket = "empty"
-            elif gold_status == "ok" and gen_ids == gold_ids:
-                bucket = "ok_match"
-            else:
-                bucket = "ok_mismatch"
-            counts[bucket] += 1
+                fout.write(json.dumps({
+                    "question": question,
+                    "gold_sql": gold_sql,
+                    "generated_sql": generated_sql,
+                    "gen_status": gen_status,
+                    "gold_status": gold_status,
+                    "bucket": bucket,
+                    "truncated": was_truncated,
+                    "gold_seconds": round(gold_s, 2),
+                    "gen_seconds": None if gen_s is None else round(gen_s, 2),
+                }, ensure_ascii=False) + "\n")
+                fout.flush()  # so progress can be followed with wc -l
+        finally:
+            runner.close()
 
-            fout.write(json.dumps({
-                "question": question,
-                "gold_sql": gold_sql,
-                "generated_sql": generated_sql,
-                "gen_status": gen_status,
-                "bucket": bucket,
-                "truncated": was_truncated,
-            }, ensure_ascii=False) + "\n")
-
-    print_verdict(counts, truncated, args)
+    print_verdict(counts, truncated, skipped, args)
 
 
-def print_verdict(counts: dict[str, int], truncated: int, args: argparse.Namespace) -> None:
+def print_verdict(counts: dict[str, int], truncated: int, skipped: int, args: argparse.Namespace) -> None:
     """Colored verdict box, plus advice targeted at the most frequent failure."""
     total = sum(counts.values())
     pct = {b: 100 * n / total if total else 0 for b, n in counts.items()}
@@ -226,10 +307,14 @@ def print_verdict(counts: dict[str, int], truncated: int, args: argparse.Namespa
         "ok_mismatch": "wrong rows",
         "empty": "empty result",
         "syntax_error": "SQL error",
+        "timeout": "too slow (timed out)",
     }
-    rows = [f"{labels[b]:<32} {counts[b]:>5}  ({pct[b]:5.1f}%)" for b in ("ok_match", "ok_mismatch", "empty", "syntax_error")]
-    sampled = f" (random sample of {args.val_total})" if total < args.val_total else ""
-    rows += ["", f"{total} validation questions{sampled} — detail: {args.out}"]
+    rows = [f"{labels[b]:<32} {counts[b]:>5}  ({pct[b]:5.1f}%)" for b in ("ok_match", "ok_mismatch", "empty", "syntax_error", "timeout")]
+    evaluated = total + skipped
+    sampled = f" (random sample of {args.val_total})" if evaluated < args.val_total else ""
+    rows += ["", f"{total} validation questions scored{sampled} — detail: {args.out}"]
+    if skipped:
+        rows.append(f"{skipped} skipped: gold query too slow (> {args.gold_timeout:.0f}s) or failed")
 
     advice = []
     if status != "ok":
@@ -238,12 +323,13 @@ def print_verdict(counts: dict[str, int], truncated: int, args: argparse.Namespa
             advice.append(f"only {train_size} training examples: generate more first (make generate-dataset ROWS=5000 or more)")
         if truncated:
             advice.append(f"{truncated} answers hit --max-new-tokens ({args.max_new_tokens}) and were cut off: raise it (.venv-finetune/bin/python scripts/07_evaluate.py --max-new-tokens 2048)")
-        worst = max(("syntax_error", "empty", "ok_mismatch"), key=counts.get)
+        worst = max(("syntax_error", "empty", "ok_mismatch", "timeout"), key=counts.get)
         if counts[worst]:
             advice.append({
                 "syntax_error": "mostly SQL errors (invented columns/tables): more data, or more epochs (make finetune EPOCHS=3)",
                 "empty": "mostly empty results (place name or category altered): more data, check examples in the detail file",
                 "ok_mismatch": "mostly wrong rows (wrong template/category): more data or epochs, check examples in the detail file",
+                "timeout": "mostly too-slow queries (badly filtered spatial joins?): check examples in the detail file; THREADS=10 also speeds DuckDB up",
             }[worst])
         advice.append("what to do, in detail: docs/TROUBLESHOOTING.md \"Evaluation (step 07)\"")
     else:

@@ -72,6 +72,16 @@ Expected on a test dataset: `ROWS=50` → ~111 training examples → 28 steps (1
 
 ## Evaluation (step 07)
 
+### Evaluation slows down or seems stuck on one question
+
+Some questions are much heavier for DuckDB than others: "left/right bank", "along" and "within X km of" compute geometry over the `water` table. When several fall in a row, progress slows (GPU at 0%, DuckDB busy on the CPU). A badly filtered generated query (e.g. a spatial join over a whole table) could also run for a very long time.
+
+Every query now runs in a child process that's killed past a time limit (`con.interrupt()` isn't reliable on some spatial queries, same finding as step 01):
+- the **gold** query runs first and is timed; past `--gold-timeout` (300 s) the question is **skipped**, left out of the score (not the model's fault);
+- the **generated** query gets **5x the gold query's time**, at least `--query-timeout` (30 s); past it, the answer counts as **"too slow (timed out)"**.
+
+A fixed limit wouldn't fit: heavy templates can legitimately take a minute with 2 threads, light ones a fraction of a second. Each line of `eval_results.jsonl` records `gold_seconds` and `gen_seconds`, and the file is flushed per question, so `wc -l models/llaici-<model>-lora/eval_results.jsonl` shows live progress. `THREADS=10` speeds DuckDB up a lot on the heavy templates.
+
 ### `make evaluate` takes hours
 
 Each validation question is a full generation (up to ~650 tokens of SQL), run one at a time. At `ROWS=5000` there are ~2,000 validation questions, so a full evaluation can take 2-3 hours, longer than training itself. Use a sample while iterating:
@@ -121,7 +131,6 @@ Change one thing at a time and re-run `make finetune` + `make evaluate`, so you 
 
 ### Known gaps in `07_evaluate.py`
 
-- **No timeout on generated SQL**: a badly filtered spatial query (e.g. a join over the whole `infrastructures` table) can run for a very long time or exhaust memory. Not hit yet; step 01 has a hard timeout for the same reason, worth adding here if it happens.
 - **No `<think>…</think>` stripping**: not needed so far (the `qwen3-instruct` template produced none), but would turn correct SQL into `syntax_error` if a model emitted reasoning tags.
 
 ---

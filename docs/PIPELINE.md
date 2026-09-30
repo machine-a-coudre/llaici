@@ -204,6 +204,8 @@ make evaluate MAX_EVAL=300   # random sample of 300 validation questions: minute
 
 Each validation question is a full generation, so evaluating all of them (~2,000 at `ROWS=5000`) can take hours. `MAX_EVAL=N` (`--max-examples`) evaluates a random sample of N instead, drawn with a fixed seed: two models evaluated with the same `MAX_EVAL` see the same questions, so their scores are comparable. ~300 gives a representative score (roughly ±5 points on the % correct); keep the full evaluation for the final model.
 
+**Time limits per query.** Each query runs in a child process killed past its limit: the gold query first (timed, max 300 s, `--gold-timeout`; past it the question is skipped), then the generated one, allowed 5x the gold query's time and at least 30 s (`--query-timeout`); past it, it counts as "too slow". Progress: `wc -l` on `eval_results.jsonl` (written as it goes). See `TROUBLESHOOTING.md` "Evaluation slows down or seems stuck".
+
 **When to run the full evaluation.** Once, on the model you intend to keep, right before exporting it (step 08):
 
 ```
