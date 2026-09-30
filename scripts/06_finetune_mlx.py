@@ -67,6 +67,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from model_paths import model_dir
+
 # Deferred: PyYAML ships with mlx-lm's own dependencies (mlx_lm/lora.py imports it
 # directly) but isn't otherwise a project dependency — kept at call time, not
 # module level, so this file can still be inspected/linted without mlx-lm
@@ -77,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default="mlx-community/Qwen3-0.6B-4bit", help="QLoRA base model (quantized MLX checkpoint)")
     parser.add_argument("--data-dir", default="data/training", help="dir holding train_formatted.jsonl/val_formatted.jsonl (scripts/05)")
-    parser.add_argument("--adapter-path", default="models/llaici-qwen3-0.6b-mlx-lora")
+    parser.add_argument("--adapter-path", default=None, help="default: models/llaici-<model>-mlx-lora (see model_paths.py)")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     # LoRA (DESIGN.md defaults: rank 16-32, lr 2e-4 — same target as scripts/06_finetune.py's
     # --rank/--lr, mlx-lm's own defaults (rank 8, lr 1e-5) are more conservative).
@@ -96,7 +98,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-checkpoint", action="store_true", help="trade compute for memory (see mlx-lm LORA.md 'Memory Issues')")
     parser.add_argument("--no-mask-prompt", dest="mask_prompt", action="store_false", help="compute loss on the whole example, not just the SQL completion")
     parser.set_defaults(mask_prompt=True)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.adapter_path = args.adapter_path or model_dir(args.model, "mlx-lora")
+    return args
 
 
 def prepare_mlx_data_dir(data_dir: Path) -> Path:

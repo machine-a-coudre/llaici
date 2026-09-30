@@ -29,12 +29,14 @@ step (§6) this evaluation happens before.
 
 Run (on a CUDA machine, after scripts/06_finetune.py has produced an adapter):
     python3 scripts/07_evaluate.py
-    python3 scripts/07_evaluate.py --adapter-dir models/llaici-qwen3-0.6b-lora --val-file data/samples/val.jsonl
+    python3 scripts/07_evaluate.py --model-name unsloth/Qwen3-1.7B-unsloth-bnb-4bit --val-file data/samples/val.jsonl
 """
 
 import argparse
 import json
 import re
+
+from model_paths import model_dir
 
 DB_PATH = "data/db/llaici.duckdb"
 
@@ -100,7 +102,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-name", default="unsloth/Qwen3-0.6B-unsloth-bnb-4bit")
     parser.add_argument("--chat-template", default="qwen3-instruct")
-    parser.add_argument("--adapter-dir", default="models/llaici-qwen3-0.6b-lora")
+    parser.add_argument("--adapter-dir", default=None, help="default: models/llaici-<model>-lora, as written by scripts/06_finetune.py")
     parser.add_argument("--val-file", default="data/samples/val.jsonl")
     parser.add_argument("--out", default="data/samples/eval_results.jsonl")
     parser.add_argument("--max-seq-length", type=int, default=2048)
@@ -113,6 +115,7 @@ def main() -> None:
         "the machine's CPU core count for a faster large run (e.g. --threads 10)",
     )
     args = parser.parse_args()
+    args.adapter_dir = args.adapter_dir or model_dir(args.model_name, "lora")
 
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import get_chat_template

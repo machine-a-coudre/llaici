@@ -48,19 +48,25 @@ import subprocess
 import sys
 from pathlib import Path
 
+from model_paths import model_dir, model_slug
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base-model", default="mlx-community/Qwen3-0.6B-4bit", help="must match scripts/06_finetune_mlx.py's --model")
-    parser.add_argument("--adapter-path", default="models/llaici-qwen3-0.6b-mlx-lora", help="LoRA adapter dir from scripts/06_finetune_mlx.py")
-    parser.add_argument("--fused-dir", default="models/llaici-qwen3-0.6b-mlx-fused", help="HF-format merged model, written by mlx_lm.fuse")
+    parser.add_argument("--adapter-path", default=None, help="LoRA adapter dir from scripts/06_finetune_mlx.py (default: models/llaici-<model>-mlx-lora)")
+    parser.add_argument("--fused-dir", default=None, help="HF-format merged model, written by mlx_lm.fuse (default: models/llaici-<model>-mlx-fused)")
     parser.add_argument("--llama-cpp-dir", required=True, help="path to a local ggml-org/llama.cpp checkout (needs convert_hf_to_gguf.py)")
-    parser.add_argument("--output-dir", default="models/llaici-qwen3-0.6b-gguf")
+    parser.add_argument("--output-dir", default=None, help="default: models/llaici-<model>-gguf")
     parser.add_argument(
         "--outtype", default="q8_0", choices=["f32", "f16", "bf16", "q8_0", "auto"],
         help="convert_hf_to_gguf.py's --outtype — DESIGN.md target is q8_0 (~800MB)",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.adapter_path = args.adapter_path or model_dir(args.base_model, "mlx-lora")
+    args.fused_dir = args.fused_dir or model_dir(args.base_model, "mlx-fused")
+    args.output_dir = args.output_dir or model_dir(args.base_model, "gguf")
+    return args
 
 
 def run(cmd: list[str]) -> None:
@@ -92,7 +98,7 @@ def main() -> None:
 
     # Step 2: convert the fused HF directory straight to a quantized GGUF.
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    outfile = Path(args.output_dir) / f"llaici-qwen3-0.6b.{args.outtype}.gguf"
+    outfile = Path(args.output_dir) / f"llaici-{model_slug(args.base_model)}.{args.outtype}.gguf"
     run([
         sys.executable, str(convert_script),
         args.fused_dir,

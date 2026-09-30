@@ -102,14 +102,24 @@ $(FINETUNE_VENV)/.ready:
 # `finetune-mlx` only (mlx-lm counts steps, not epochs):
 #   ITERS         training iterations [600]
 #   LORA_SCALE    mlx-lm's LoRA alpha/scale [20.0]
+#
+# Base model (Hugging Face id, downloaded on first use and cached in ~/.cache/huggingface/):
+#   MODEL          [unsloth/Qwen3-0.6B-unsloth-bnb-4bit / mlx-community/Qwen3-0.6B-4bit]
+#                  also passed to `evaluate`, `merge-and-quantize` and `merge-and-quantize-mlx`:
+#                  they must load the same base model the adapter was trained on, and
+#                  output dirs are named after it (models/llaici-<model>-lora/-gguf...)
+#   CHAT_TEMPLATE  Unsloth chat template name, `finetune` + `evaluate` only [qwen3-instruct]
+#                  — change it along with MODEL when switching to another model family
+UNSLOTH_MODEL_ARGS = $(if $(MODEL),--model-name $(MODEL)) $(if $(CHAT_TEMPLATE),--chat-template $(CHAT_TEMPLATE))
 FINETUNE_COMMON_ARGS = $(if $(RANK),--rank $(RANK)) $(if $(LORA_DROPOUT),--lora-dropout $(LORA_DROPOUT)) \
 	$(if $(MAX_SEQ_LENGTH),--max-seq-length $(MAX_SEQ_LENGTH)) $(if $(SEED),--seed $(SEED))
 
 # STEP 5 (fine-tuning), §3/§4: QLoRA fine-tune Qwen3-0.6B (see FINETUNING.md, scripts/06_finetune.py)
 # ⚠️ Requires a CUDA GPU — runs in the venv set up by `finetune-venv` (built automatically).
 # Example: make finetune EPOCHS=3 RANK=16 LR=1e-4
+#          make finetune MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit
 finetune: $(FINETUNE_VENV)/.ready
-	$(FINETUNE_PY) scripts/06_finetune.py $(FINETUNE_COMMON_ARGS) \
+	$(FINETUNE_PY) scripts/06_finetune.py $(FINETUNE_COMMON_ARGS) $(UNSLOTH_MODEL_ARGS) \
 		$(if $(EPOCHS),--epochs $(EPOCHS)) $(if $(LR),--lr $(LR)) $(if $(LORA_ALPHA),--lora-alpha $(LORA_ALPHA)) \
 		$(if $(BATCH_SIZE),--per-device-batch-size $(BATCH_SIZE)) $(if $(GRAD_ACCUM),--gradient-accumulation-steps $(GRAD_ACCUM))
 
@@ -118,7 +128,7 @@ finetune: $(FINETUNE_VENV)/.ready
 # ⚠️ Requires `pip install "mlx-lm[train]"` on a Mac.
 # Example: make finetune-mlx ITERS=1000 RANK=16
 finetune-mlx:
-	python3 scripts/06_finetune_mlx.py $(FINETUNE_COMMON_ARGS) \
+	python3 scripts/06_finetune_mlx.py $(FINETUNE_COMMON_ARGS) $(if $(MODEL),--model $(MODEL)) \
 		$(if $(ITERS),--iters $(ITERS)) $(if $(LR),--learning-rate $(LR)) $(if $(LORA_SCALE),--lora-scale $(LORA_SCALE)) \
 		$(if $(BATCH_SIZE),--batch-size $(BATCH_SIZE))
 
@@ -126,19 +136,19 @@ finetune-mlx:
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
 evaluate: $(FINETUNE_VENV)/.ready
 	$(PRINT_THREADS)
-	$(FINETUNE_PY) scripts/07_evaluate.py --threads $(THREADS)
+	$(FINETUNE_PY) scripts/07_evaluate.py --threads $(THREADS) $(UNSLOTH_MODEL_ARGS)
 
 # STEP 5, §6: merge the LoRA adapter and export to quantized GGUF (see FINETUNING.md, scripts/08_merge_and_quantize.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
 merge-and-quantize: $(FINETUNE_VENV)/.ready
-	$(FINETUNE_PY) scripts/08_merge_and_quantize.py
+	$(FINETUNE_PY) scripts/08_merge_and_quantize.py $(if $(MODEL),--model-name $(MODEL))
 
 # STEP 5, §6 Apple Silicon alternative: merge (mlx_lm.fuse) + convert/quantize to
 # GGUF (llama.cpp's convert_hf_to_gguf.py) for an adapter from `finetune-mlx`.
 # ⚠️ Requires `pip install "mlx-lm[train]"` and a local ggml-org/llama.cpp clone
 # (see LLAMA_CPP_DIR). Example: make merge-and-quantize-mlx LLAMA_CPP_DIR=~/llama.cpp
 merge-and-quantize-mlx:
-	python3 scripts/08_merge_and_quantize_mlx.py --llama-cpp-dir $(LLAMA_CPP_DIR)
+	python3 scripts/08_merge_and_quantize_mlx.py --llama-cpp-dir $(LLAMA_CPP_DIR) $(if $(MODEL),--base-model $(MODEL))
 
 # STEP 5, full pipeline (CUDA/Unsloth path): fine-tune -> evaluate -> merge/quantize
 # to GGUF (FINETUNING.md §3-6). Assumes data/training/{train,val}_formatted.jsonl

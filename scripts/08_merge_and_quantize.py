@@ -24,20 +24,27 @@ in this development environment — see 06_finetune.py's docstring for why.
 
 Run (on a CUDA machine, after scripts/06_finetune.py has produced an adapter):
     python3 scripts/08_merge_and_quantize.py
-    python3 scripts/08_merge_and_quantize.py --adapter-dir models/llaici-qwen3-0.6b-lora --quantization-method q4_k_m
+    python3 scripts/08_merge_and_quantize.py --model-name unsloth/Qwen3-1.7B-unsloth-bnb-4bit --quantization-method q4_k_m
 """
 
 import argparse
 import os
 
+from model_paths import model_dir
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--adapter-dir", default="models/llaici-qwen3-0.6b-lora", help="LoRA adapter dir from scripts/06_finetune.py")
-    parser.add_argument("--output-dir", default="models/llaici-qwen3-0.6b-gguf")
+    # Only used to name the default directories: the base model itself is resolved
+    # from the adapter's own config (see docstring).
+    parser.add_argument("--model-name", default="unsloth/Qwen3-0.6B-unsloth-bnb-4bit", help="base model given to scripts/06_finetune.py")
+    parser.add_argument("--adapter-dir", default=None, help="default: models/llaici-<model>-lora")
+    parser.add_argument("--output-dir", default=None, help="default: models/llaici-<model>-gguf")
     parser.add_argument("--quantization-method", default="q8_0", help="DESIGN.md STEP 5 target: GGUF Q8 (~800MB)")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     args = parser.parse_args()
+    args.adapter_dir = args.adapter_dir or model_dir(args.model_name, "lora")
+    args.output_dir = args.output_dir or model_dir(args.model_name, "gguf")
 
     from unsloth import FastLanguageModel
 

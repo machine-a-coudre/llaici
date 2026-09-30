@@ -178,10 +178,14 @@ make finetune-mlx ITERS=1000 RANK=16     # Apple Silicon path, same idea
 | `GRAD_ACCUM` | `--gradient-accumulation-steps` | 4 | CUDA |
 | `MAX_SEQ_LENGTH` | `--max-seq-length` | 2048 | both |
 | `SEED` | `--seed` | 3407 | both |
+| `MODEL` | `--model-name` / `--model` | `unsloth/Qwen3-0.6B-unsloth-bnb-4bit` (CUDA) / `mlx-community/Qwen3-0.6B-4bit` (MLX) | both |
+| `CHAT_TEMPLATE` | `--chat-template` | `qwen3-instruct` | CUDA |
+
+`MODEL` is a Hugging Face id, downloaded on first use. Pass the same `MODEL` (and `CHAT_TEMPLATE`) to `make evaluate` / `make merge-and-quantize` / `make merge-and-quantize-mlx`: they reload the base model the adapter was trained on — `make finetune-pipeline-cuda MODEL=...` / `finetune-pipeline-mlx MODEL=...` do it for you. When switching to another model family, change `CHAT_TEMPLATE` too (name from Unsloth's `chat_templates.py`). Output directories are named after the model (`scripts/model_paths.py`): the Hugging Face id minus its quantization suffix, so `MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit` writes `models/llaici-qwen3-1.7b-lora/`, then `models/llaici-qwen3-1.7b-gguf/`. Runs with different models sit side by side. The default model keeps `llaici-qwen3-0.6b-*`, as before. Each script's `--output-dir`/`--adapter-dir` flags still override this.
 
 Anything else (model name, output dir, MLX eval/save cadence...): call the script directly, `--help` lists every flag.
 
-Saves a LoRA adapter to `models/llaici-qwen3-0.6b-lora/` — merging into the base model and GGUF quantization (step 08) is a separate, later step.
+Saves a LoRA adapter to `models/llaici-<model>-lora/` (`llaici-qwen3-0.6b-lora/` with the default model) — merging into the base model and GGUF quantization (step 08) is a separate, later step.
 
 ---
 
@@ -206,4 +210,4 @@ Writes per-example detail (question, gold SQL, generated SQL, outcome) to `data/
 make merge-and-quantize
 ```
 
-Writes the GGUF model to `models/llaici-qwen3-0.6b-gguf/`.
+Writes the GGUF model to `models/llaici-<model>-gguf/` (`llaici-qwen3-0.6b-gguf/` with the default model).

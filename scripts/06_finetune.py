@@ -33,6 +33,8 @@ FINETUNING.md §6, a separate step: scripts/08_merge_and_quantize.py).
 
 import argparse
 
+from model_paths import model_dir
+
 # Deferred: only importable on a CUDA machine with unsloth/torch/trl/peft/
 # bitsandbytes installed — kept at call time, not module level, so this file can
 # still be inspected/linted on this dev machine without those dependencies.
@@ -44,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chat-template", default="qwen3-instruct")
     parser.add_argument("--train-file", default="data/training/train_formatted.jsonl")
     parser.add_argument("--val-file", default="data/training/val_formatted.jsonl")
-    parser.add_argument("--output-dir", default="models/llaici-qwen3-0.6b-lora")
+    parser.add_argument("--output-dir", default=None, help="default: models/llaici-<model>-lora (see model_paths.py)")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     # LoRA (DESIGN.md defaults: rank 16-32, lr 2e-4, 2 epochs — see FINETUNING.md §3)
     parser.add_argument("--rank", type=int, default=32, help="LoRA rank (Unsloth recommends 16 or 32)")
@@ -55,7 +57,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-device-batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--seed", type=int, default=3407)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.output_dir = args.output_dir or model_dir(args.model_name, "lora")
+    return args
 
 
 def main() -> None:
