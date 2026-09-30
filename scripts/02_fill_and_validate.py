@@ -56,32 +56,44 @@ def esc(value: str) -> str:
     return value.replace("'", "''")
 
 
-def name_match(alias: str, term: str) -> str:
-    """Case- and accent-insensitive name match: ILIKE ignores case, strip_accents on
-    both sides ignores accents, so a user typing "Seville" finds "Séville" (step 03
-    generates such accent-less questions). The term is kept exactly as typed in the
-    question, so the model only ever copies it — it never has to strip accents itself."""
+def name_equals(alias: str, term: str) -> str:
+    """Exact name match, case- and accent-insensitive, for places (divisions /
+    division_areas): "Madrid" must not also match "Madridejos" or every district
+    named "Barrio de Madrid" — a substring match turned "restaurants north of Madrid"
+    into restaurants north of dozens of places. strip_accents on both sides lets a
+    user type "Seville" for "Séville" (step 03 generates such accent-less questions);
+    the term stays exactly as typed, so the model only ever copies it."""
     term = esc(term)
-    return " OR ".join(f"strip_accents({alias}.{col}) ILIKE strip_accents('%{term}%')" for col in NAME_COLUMNS)
+    return " OR ".join(f"strip_accents(lower({alias}.{col})) = strip_accents(lower('{term}'))" for col in NAME_COLUMNS)
 
 
-def name_match_bare(term: str) -> str:
-    """Same as name_match, but for a CTE with no table alias (templates #3, #8, left/right bank)."""
+def name_equals_bare(term: str) -> str:
+    """Same as name_equals, but for a CTE with no table alias."""
+    term = esc(term)
+    return " OR ".join(f"strip_accents(lower({col})) = strip_accents(lower('{term}'))" for col in NAME_COLUMNS)
+
+
+def name_contains(term: str) -> str:
+    """Substring name match (case- and accent-insensitive), for water features only
+    (templates #3, #8, left/right bank): rivers are often stored with a prefix the
+    user won't type ("Río Ebro" for "Ebro"), so an exact match would miss them."""
     term = esc(term)
     return " OR ".join(f"strip_accents({col}) ILIKE strip_accents('%{term}%')" for col in NAME_COLUMNS)
 
 
-def azimuth_expr() -> str:
+def azimuth_expr(point: str = "ST_Centroid(e.geometry)") -> str:
+    """Bearing from `ref` to `point` (the candidate reduced to a point: a centroid
+    for infrastructures/divisions, the geometry itself for always-point `places`)."""
     return (
         "degrees(ST_Azimuth("
         "ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)), "
-        "ST_Point2D(ST_X(ST_Centroid(e.geometry)), ST_Y(ST_Centroid(e.geometry)))"
+        f"ST_Point2D(ST_X({point}), ST_Y({point}))"
         "))"
     )
 
 
-def angle_condition(direction: str, angle_min: float, angle_max: float) -> str:
-    expr = azimuth_expr()
+def angle_condition(direction: str, angle_min: float, angle_max: float, point: str = "ST_Centroid(e.geometry)") -> str:
+    expr = azimuth_expr(point)
     if direction == "north":
         return f"({expr} >= 315 OR {expr} < 45)"
     return f"{expr} BETWEEN {angle_min} AND {angle_max}"
@@ -93,7 +105,7 @@ def build_containment(p: dict) -> str:
         FROM infrastructures e
         JOIN division_areas da ON ST_Within(e.geometry, da.geometry)
         WHERE e.subtype = '{esc(p['subtype'])}' AND e.class = '{esc(p['class'])}'
-          AND ({name_match('da', p['place'])})
+          AND ({name_equals('da', p['place'])})
     """
 
 
@@ -102,7 +114,7 @@ def build_proximity(p: dict) -> str:
         SELECT e.id, e.name, e.geometry
         FROM infrastructures e, divisions ref
         WHERE e.subtype = '{esc(p['subtype'])}' AND e.class = '{esc(p['class'])}'
-          AND ({name_match('ref', p['place'])})
+          AND ({name_equals('ref', p['place'])})
           AND ST_DWithin_Spheroid(
                 ST_Point2D(ST_X(ST_Centroid(e.geometry)), ST_Y(ST_Centroid(e.geometry))),
                 ST_Point2D(ST_X(ST_ClosestPoint(ref.geometry, e.geometry)), ST_Y(ST_ClosestPoint(ref.geometry, e.geometry))),
@@ -117,7 +129,7 @@ def build_along(p: dict) -> str:
             FROM water
             WHERE class IN ('river', 'stream', 'canal')
               AND ST_GeometryType(geometry) = 'LINESTRING'
-              AND ({name_match_bare(p['feature'])})
+              AND ({name_contains(p['feature'])})
         ),
         bbox AS (
             SELECT line,
@@ -150,7 +162,7 @@ def build_center(p: dict) -> str:
     return f"""
         SELECT e.id, e.name, e.geometry
         FROM infrastructures e
-        JOIN division_areas da ON ({name_match('da', p['place'])})
+        JOIN division_areas da ON ({name_equals('da', p['place'])})
         WHERE e.subtype = '{esc(p['subtype'])}' AND e.class = '{esc(p['class'])}'
           AND ST_DWithin_Spheroid(
                 ST_Point2D(ST_X(ST_Centroid(e.geometry)), ST_Y(ST_Centroid(e.geometry))),
@@ -163,7 +175,7 @@ def build_periphery(p: dict) -> str:
     return f"""
         SELECT e.id, e.name, e.geometry
         FROM infrastructures e
-        JOIN division_areas da ON ({name_match('da', p['place'])})
+        JOIN division_areas da ON ({name_equals('da', p['place'])})
         WHERE e.subtype = '{esc(p['subtype'])}' AND e.class = '{esc(p['class'])}'
           AND ST_Within(e.geometry, da.geometry)
           AND ST_DWithin_Spheroid(
@@ -178,7 +190,7 @@ def build_direction(p: dict) -> str:
         SELECT e.id, e.name, e.geometry
         FROM infrastructures e, divisions ref
         WHERE e.subtype = '{esc(p['subtype'])}' AND e.class = '{esc(p['class'])}'
-          AND ({name_match('ref', p['place'])})
+          AND ({name_equals('ref', p['place'])})
           AND {angle_condition(p['direction'], p['angle_min'], p['angle_max'])}
           AND ST_Distance_Spheroid(
                 ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
@@ -192,7 +204,7 @@ def build_direction_distance(p: dict) -> str:
         SELECT e.id, e.name, e.geometry
         FROM infrastructures e, divisions ref
         WHERE e.subtype = '{esc(p['subtype'])}' AND e.class = '{esc(p['class'])}'
-          AND ({name_match('ref', p['place'])})
+          AND ({name_equals('ref', p['place'])})
           AND {angle_condition(p['direction'], p['angle_min'], p['angle_max'])}
           AND ST_Distance_Spheroid(
                 ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
@@ -207,7 +219,7 @@ def build_area_distance(p: dict) -> str:
         WITH ref AS (
             SELECT geometry
             FROM water
-            WHERE ({name_match_bare(p['place'])})
+            WHERE ({name_contains(p['place'])})
             LIMIT 1
         ),
         bbox AS (
@@ -238,7 +250,7 @@ def build_left_right_bank(p: dict) -> str:
             FROM water
             WHERE class IN ('river', 'stream', 'canal')
               AND ST_GeometryType(geometry) = 'LINESTRING'
-              AND ({name_match_bare(p['feature'])})
+              AND ({name_contains(p['feature'])})
         ),
         bbox AS (
             SELECT line,
@@ -282,7 +294,7 @@ def build_places_containment(p: dict) -> str:
         FROM places p
         JOIN division_areas da ON ST_Within(p.geometry, da.geometry)
         WHERE list_contains(p.category_hierarchy, '{esc(p['category'])}')
-          AND ({name_match('da', p['place'])})
+          AND ({name_equals('da', p['place'])})
     """
 
 
@@ -291,11 +303,26 @@ def build_places_proximity(p: dict) -> str:
         SELECT p.id, p.name, p.geometry
         FROM places p, divisions ref
         WHERE list_contains(p.category_hierarchy, '{esc(p['category'])}')
-          AND ({name_match('ref', p['place'])})
+          AND ({name_equals('ref', p['place'])})
           AND ST_DWithin_Spheroid(
                 ST_Point2D(ST_X(p.geometry), ST_Y(p.geometry)),
                 ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
                 {p['distance_m']})
+    """
+
+
+def build_places_direction(p: dict) -> str:
+    """Same shape as build_direction, on `places` (always points: no ST_Centroid)."""
+    return f"""
+        SELECT p.id, p.name, p.geometry
+        FROM places p, divisions ref
+        WHERE list_contains(p.category_hierarchy, '{esc(p['category'])}')
+          AND ({name_equals('ref', p['place'])})
+          AND {angle_condition(p['direction'], p['angle_min'], p['angle_max'], 'p.geometry')}
+          AND ST_Distance_Spheroid(
+                ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
+                ST_Point2D(ST_X(p.geometry), ST_Y(p.geometry))
+              ) <= 100000
     """
 
 
@@ -304,7 +331,7 @@ def build_bordering(p: dict) -> str:
         WITH ref AS (
             SELECT geometry
             FROM division_areas
-            WHERE ({name_match_bare(p['place'])})
+            WHERE ({name_equals_bare(p['place'])})
             LIMIT 1
         ),
         bbox AS MATERIALIZED (
@@ -333,7 +360,7 @@ def _build_city_direction(p: dict, distance_condition: str) -> str:
         WITH ref AS (
             SELECT geometry
             FROM divisions
-            WHERE ({name_match_bare(p['place'])})
+            WHERE ({name_equals_bare(p['place'])})
             ORDER BY population DESC NULLS LAST
             LIMIT 1
         ),
@@ -383,7 +410,7 @@ def build_show_division(p: dict) -> str:
         WITH d AS (
             SELECT id, name, geometry
             FROM divisions
-            WHERE ({name_match_bare(p['place'])})
+            WHERE ({name_equals_bare(p['place'])})
             ORDER BY population DESC NULLS LAST
             LIMIT 1
         ),
@@ -413,6 +440,7 @@ BUILDERS = {
     "left_right_bank": build_left_right_bank,
     "places_containment": build_places_containment,
     "places_proximity": build_places_proximity,
+    "places_direction": build_places_direction,
     "bordering": build_bordering,
     "show_division": build_show_division,
     "city_direction": build_city_direction,
@@ -432,6 +460,7 @@ REF_TABLE = {
     "direction": "divisions",
     "direction_distance": "divisions",
     "places_proximity": "divisions",
+    "places_direction": "divisions",
     "city_direction": "divisions",
     "city_direction_distance": "divisions",
     "show_division": "divisions",

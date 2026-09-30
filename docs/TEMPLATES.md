@@ -59,15 +59,23 @@ WITH bbox AS (
 
 Not needed for templates joining only against `divisions` (always a point — no multi-vertex geometry to make the exact check expensive) or when the name filter already narrows the join to one specific row (e.g. `division_areas` for a single named city in template #1/#4/#5, tested fine without it).
 
-## Name matching: case- and accent-insensitive
+## Name matching: exact for places, substring for water — both case- and accent-insensitive
 
-The templates below show name filters as `name ILIKE '%{place}%'` for readability. The SQL actually generated (`02_fill_and_validate.py`, `name_match()`) wraps both sides in `strip_accents`:
+The templates below show name filters as `name ILIKE '%{place}%'` for readability. The SQL actually generated (`02_fill_and_validate.py`) uses two forms:
 
 ```sql
-strip_accents(da.name) ILIKE strip_accents('%{place}%') OR strip_accents(da.name_fr) ILIKE strip_accents('%{place}%') ...
+-- Places (divisions / division_areas): exact name — name_equals()
+strip_accents(lower(ref.name)) = strip_accents(lower('{place}')) OR strip_accents(lower(ref.name_fr)) = ... /* 7 name columns */
+
+-- Water (along, left/right bank, area-based distance): substring — name_contains()
+strip_accents(name) ILIKE strip_accents('%{feature}%') OR strip_accents(name_fr) ILIKE ... /* 7 name columns */
 ```
 
-`ILIKE` already ignores case; `strip_accents` makes "Seville" match "Séville" and "cordoba" match "Córdoba", since users often type without accents (step 03 generates such questions). The term stays exactly as typed in the question, so the model only copies it and never has to strip accents itself. Cost: longer SQL (~+50 tokens per name match), and `strip_accents` evaluated on every scanned name — not benchmarked.
+- **Exact match for places.** A substring match on a common name selected dozens of reference places at once: `'%madrid%'` also matches Madridejos and every district or hamlet called "Madrid" or "Barrio de Madrid", so "restaurants north of Madrid" returned restaurants north of each of them, spread over the whole country. The training data never showed it (samples are small places with unique names). Found by testing the demo app.
+- **Substring match kept for water**: rivers are often stored with a prefix users don't type ("Río Ebro" for "Ebro"), which an exact match would miss.
+- **Case and accents ignored on both**: `lower`/`ILIKE` for case, `strip_accents` on both sides so "Seville" finds "Séville" (users often type without accents; step 03 generates such questions). The term stays exactly as typed in the question, so the model only copies it and never has to strip accents itself.
+- **Remaining limit — homonyms**: an exact match still selects *every* place with that exact name ("Villanueva" is the name of dozens of Spanish villages), so a question about one of them covers all of them. No tie-break (e.g. by population) is applied.
+- Cost: longer SQL (~+50 tokens per name match), and `strip_accents` evaluated on every scanned name — not benchmarked.
 
 ## Distance and angle conventions
 
@@ -359,6 +367,30 @@ Params: `{category}` — `restaurant`, `lodging`, `hotel`, `school`, `hospital`,
   - Caveat found in the same check: `fast_food_restaurant`'s hierarchy is `['food_and_drink', 'casual_eatery', 'fast_food_restaurant']` — it skips the `restaurant` node entirely, so `list_contains(hierarchy, 'restaurant')` does **not** include fast food. Open question, not resolved here: should "restaurants" include fast food? If yes, the filter needs an explicit `OR list_contains(category_hierarchy, 'fast_food_restaurant')` (or match on the broader `food_and_drink` node, which is far broader than "restaurant" alone and would also pull in bars/cafes).
 - No `ST_Centroid` needed on `p.geometry`: `places` geometry is always a point (confirmed in the schema check), unlike the mixed-geometry `infrastructures`/`water` views.
 - `confidence`/`operating_status` were considered as quality filters (e.g. excluding permanently-closed venues) but dropped from the view for simplicity — not used by these templates. Revisit if closed/low-confidence venues turn out to pollute results in practice.
+
+---
+
+## 13. Places in a direction — "restaurants north of Madrid"
+
+**NL examples**: "restaurants north of Madrid" / "restaurants au nord de Madrid", "hotels east of Orléans" / "hôtels à l'est d'Orléans"
+
+Same shape as #6 (cardinal direction, no distance), with a `places` category (#9) instead of an infrastructure `subtype`/`class`. Added after testing the demo app: asked "restaurants north of Madrid", the model combined #9 and #6 on its own, without ever having seen that combination. Made an explicit template so it's learned rather than improvised.
+
+```sql
+SELECT p.id, p.name, p.geometry
+FROM places p, divisions ref
+WHERE list_contains(p.category_hierarchy, '{category}')
+  AND (ref.name = '{place}' /* exact, see "Name matching" */)
+  AND (degrees(ST_Azimuth(ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
+                          ST_Point2D(ST_X(p.geometry), ST_Y(p.geometry)))) >= 315
+       OR ... < 45)   -- north; BETWEEN {angle_min} AND {angle_max} for the others
+  AND ST_Distance_Spheroid(ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
+                           ST_Point2D(ST_X(p.geometry), ST_Y(p.geometry))) <= 100000;
+```
+
+- Same angle and 100 km cap conventions as #6 (see "Distance and angle conventions"). No `ST_Centroid`: `places` are always points.
+- Sampled by `sample_places_direction` (`01_sample_entities.py`): a random locality, a category from #9, and a matching place within 100 km, whose actual bearing gives the direction. Phrasings reuse #6's (`PHRASES["places_direction"] = PHRASES["direction"]`).
+- No "places + direction + distance" variant yet ("restaurants 10 km north of Madrid"); #7's shape would carry over the same way.
 
 ---
 

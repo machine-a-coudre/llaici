@@ -245,6 +245,7 @@ PHRASES = {
 # "bus stops in X" / "bus stops near X") — no new sentence structure needed.
 PHRASES["places_containment"] = PHRASES["containment"]
 PHRASES["places_proximity"] = PHRASES["proximity"]
+PHRASES["places_direction"] = PHRASES["direction"]
 SIDE_FR = {"left": "gauche", "right": "droite"}
 
 

@@ -173,3 +173,13 @@ The model never ended its answer: under greedy decoding (the app asks for `tempe
 
 Evaluation results produced before `07_evaluate.py` switched to greedy decoding came from *random sampling*: a success there could be luck. The app always decodes greedily, like the current evaluation. Re-run `make evaluate` (or `make evaluate MAX_EVAL=300` for a quicker score) for a result that matches what the app will do.
 
+### "restaurants north of Madrid" returns restaurants all over the country
+
+The generated SQL was fine; the **template** was wrong. Place names were matched as a substring (`ILIKE '%madrid%'`), which selects every place whose name *contains* "madrid": Madridejos, districts and hamlets named "Madrid" or "Barrio de Madrid"... The query then returned the restaurants north of **each** of them: clusters spread over the whole country, and duplicates where two clusters overlap. The training data never exposed it, since samples are small places with unique names.
+
+Fixed in step 02: places (`divisions`/`division_areas`) are now matched on the **exact** name, still ignoring case and accents (`strip_accents(lower(name)) = strip_accents(lower('Madrid'))`). Water features keep a substring match, since rivers are often stored as "Río Ebro" while users type "Ebro". See `TEMPLATES.md` "Name matching".
+
+Also, there was no "places in a direction" template: the model had combined "restaurants" (template #9) and "north of" (#6) on its own. Template #13 (`places_direction`) now covers it explicitly.
+
+Needs a new dataset (steps 01-05: step 01 for the new template's samples) and a new training. Remaining limit: homonyms. Several places can share the exact same name ("Villanueva"), and all of them are then used as the reference.
+

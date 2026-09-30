@@ -822,6 +822,52 @@ def sample_places_proximity(con, c: Country) -> dict | None:
     return {"template": "places_proximity", "place": row[0], "category": category, "distance_m": 5000}
 
 
+def sample_places_direction(con, c: Country) -> dict | None:
+    """Template 13: places in a direction ("restaurants north of Madrid"). Same idea
+    as sample_direction, with a `places` category instead of an infrastructure one."""
+    category = random.choice(PLACE_CATEGORIES)
+    bbox = BBOX_SQL.format(geom="d.geometry", dist_m=100000)
+    row = con.execute(
+        f"""
+        WITH ref AS (
+            SELECT d.name, d.geometry, {bbox} AS box
+            FROM divisions d
+            WHERE d.subtype IN ('locality', 'neighborhood')
+              AND d.name IS NOT NULL
+              AND d.country = ?
+            ORDER BY random() LIMIT 1
+        )
+        SELECT ref.name,
+               degrees(ST_Azimuth(
+                   ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
+                   ST_Point2D(ST_X(p.geometry), ST_Y(p.geometry))
+               )) AS bearing
+        FROM ref, places p
+        WHERE list_contains(p.category_hierarchy, ?)
+          AND ST_Intersects(p.geometry, ref.box)
+          AND ST_DWithin_Spheroid(
+                ST_Point2D(ST_X(ref.geometry), ST_Y(ref.geometry)),
+                ST_Point2D(ST_X(p.geometry), ST_Y(p.geometry)),
+                100000)
+        LIMIT 1
+        """,
+        [c.code, category],
+    ).fetchone()
+    if row is None:
+        return None
+    place, bearing = row
+    direction, angle_min, angle_max = classify_bearing(bearing)
+    return {
+        "template": "places_direction",
+        "place": place,
+        "category": category,
+        "direction": direction,
+        "angle_min": angle_min,
+        "angle_max": angle_max,
+        "actual_bearing": round(bearing, 1),
+    }
+
+
 SAMPLERS = {
     "containment": lambda con, c: sample_containment(con, c),
     "proximity": lambda con, c: sample_proximity(con, c),
@@ -834,6 +880,7 @@ SAMPLERS = {
     "left_right_bank": lambda con, c: sample_left_right_bank(con, c),
     "places_containment": lambda con, c: sample_places_containment(con, c),
     "places_proximity": lambda con, c: sample_places_proximity(con, c),
+    "places_direction": lambda con, c: sample_places_direction(con, c),
     "bordering": lambda con, c: sample_bordering(con, c),
     "show_division": lambda con, c: sample_show_division(con, c),
     "city_direction": lambda con, c: sample_city_direction(con, c, with_distance=False),
