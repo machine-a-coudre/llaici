@@ -30,6 +30,8 @@ import argparse
 import json
 from pathlib import Path
 
+from console import print_box
+
 DEFAULT_SYSTEM = (
     "You translate a natural-language geographic question into a single DuckDB "
     "SQL query, using DuckDB's spatial extension functions (ST_*, list_contains, "
@@ -85,21 +87,12 @@ def main() -> None:
 
 
 def print_summary(written: list[tuple[str, str, int]]) -> None:
-    """Hard-to-miss box pointing at the files step 06 will train on (same ANSI
-    style as the Makefile's PRINT_THREADS reminder)."""
-    bold_green, cyan, dim, reset = "\033[1;32m", "\033[36m", "\033[2m", "\033[0m"
-    rows = [f"{split:<5}  {path}  ({n} examples)" for split, path, n in written]
-    title = "✔  Training files ready"
-    width = max(len(title), *(len(r) for r in rows)) + 2
-    print()
-    print(f"{bold_green}╭{'─' * (width + 2)}╮{reset}")
-    print(f"{bold_green}│ {title:<{width}} │{reset}")
-    print(f"{bold_green}├{'─' * (width + 2)}┤{reset}")
-    for r in rows:
-        print(f"{bold_green}│{reset} {cyan}{r:<{width}}{reset} {bold_green}│{reset}")
-    print(f"{bold_green}╰{'─' * (width + 2)}╯{reset}")
-    print(f"{dim}   → next: make finetune (CUDA) or make finetune-mlx (Apple Silicon){reset}")
-    print()
+    """Points at the files step 06 will train on."""
+    print_box(
+        "Training files ready",
+        [f"{split:<5}  {path}  ({n} examples)" for split, path, n in written],
+        ["next: make finetune (CUDA) or make finetune-mlx (Apple Silicon)"],
+    )
 
 
 if __name__ == "__main__":

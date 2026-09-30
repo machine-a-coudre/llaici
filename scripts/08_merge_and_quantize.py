@@ -30,6 +30,9 @@ Run (on a CUDA machine, after scripts/06_finetune.py has produced an adapter):
 import argparse
 import os
 
+from pathlib import Path
+
+from console import human_size, print_box
 from model_paths import model_dir
 
 
@@ -57,7 +60,13 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
     model.save_pretrained_gguf(args.output_dir, tokenizer, quantization_method=args.quantization_method)
 
-    print(f"# GGUF ({args.quantization_method}) model written to {args.output_dir}")
+    # save_pretrained_gguf picks the file name itself: list what it wrote.
+    ggufs = sorted(Path(args.output_dir).glob("*.gguf")) or [Path(args.output_dir)]
+    print_box(
+        f"Model ready — GGUF ({args.quantization_method})",
+        [f"{g}  ({human_size(g)})" for g in ggufs],
+        [f"serve it:  llama-server -m {ggufs[0]} --port 8080  (see app/README.md)"],
+    )
 
 
 if __name__ == "__main__":

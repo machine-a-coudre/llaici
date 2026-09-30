@@ -10,6 +10,16 @@ It covers the whole chain:
 > [!NOTE]
 > The model only knows the view names and columns, not what's behind them. Training runs on the local Parquet extracts, but once trained, the same model could query another backend, such as a PostgreSQL/PostGIS database attached through DuckDB's `postgres` extension, as long as the views keep exposing the same columns. This hasn't been tested. Expect to convert PostGIS geometries in the views, and note that spatial filters (`ST_Within`, `ST_DWithin_Spheroid`...) aren't pushed down to PostgreSQL: DuckDB pulls the rows and computes them itself, which can be slow on large tables.
 
+## How it works, in plain terms
+
+**1. Build a dataset of (question, SQL) pairs.** Nobody writes them by hand: real places are sampled from Overture ("Lyon", "the Seine", "bus stops"), plugged into hand-written SQL templates ("bus stops in {place}"), and each query is **executed** to keep only the ones that return something. Then several French and English phrasings of the question are generated for each query. This is steps 01-05.
+
+**2. Teach an existing model with a LoRA adapter.** We don't train a model from scratch. We start from a small open model (Qwen3 0.6B, downloaded automatically from Hugging Face the first time) that already understands language, and teach it our SQL. Its ~600M parameters stay untouched (**frozen**). Next to them, LoRA adds small extra matrices, the **adapter** (~20M parameters, about 3% of the model, ~80 MB), and only those are trained. The base model is also loaded compressed to 4-bit (**QLoRA**), which is what lets training fit on a consumer GPU. Think of the base model as a printed map and the adapter as a transparent overlay with your notes: the overlay is useless alone, and the map alone doesn't know your notes. This is step 06.
+
+**3. Check that the generated SQL is actually right.** The training loss only says the model is learning something. The real test (step 07) asks the model questions it never saw, runs its SQL in DuckDB, and compares the rows returned to the expected answer: correct, wrong rows, empty, or broken SQL.
+
+**4. Package it as a single file.** An adapter only works on top of its base model. Step 08 **merges** the two and **quantizes** the result into one GGUF file (~800 MB), which `llama-server` can serve on its own to the demo app.
+
 ## Documentation
 
 | Document | What's in it |
@@ -19,6 +29,7 @@ It covers the whole chain:
 | [`docs/TEMPLATES.md`](docs/TEMPLATES.md) | The SQL query patterns the model learns to generate |
 | [`docs/FINETUNING.md`](docs/FINETUNING.md) | The fine-tuning steps in detail — model choice, LoRA config, evaluation |
 | [`docs/PIPELINE.md`](docs/PIPELINE.md) | The exact command, flags, and defaults for every pipeline step below |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Problems hit while running the pipeline (warnings, low scores, locks...) and what they mean |
 | [`app/README.md`](app/README.md) | How to run the demo app (backend + frontend + llama-server) |
 | [`app/backend/README.md`](app/backend/README.md) | Backend-specific setup and API reference |
 
@@ -39,7 +50,7 @@ Each step is a script under `scripts/`, numbered in the order it runs.
 | **07** | Evaluate the fine-tuned model |
 | **08** | Merge and quantize the model to GGUF |
 
-Steps 00-05 (data preparation) run fine on a regular machine and have all been tested against real data. Steps 06-08 (fine-tuning) need an NVIDIA GPU with CUDA and haven't been run yet in this environment — see [`docs/FINETUNING.md`](docs/FINETUNING.md) for details.
+Steps 00-05 (data preparation) run fine on a regular machine and have all been tested against real data. Steps 06-08 (fine-tuning) need an NVIDIA GPU with CUDA. Step 06 has been tested end to end on an NVIDIA RTX 50xx (Blackwell) GPU with a small dataset. Steps 07-08 haven't been run yet — see [`docs/FINETUNING.md`](docs/FINETUNING.md) for details.
 
 👉 **For the exact command for each step, see [`docs/PIPELINE.md`](docs/PIPELINE.md).**
 
@@ -60,7 +71,7 @@ docker compose up duckdb        # once: builds the DuckDB views (00_init.sql) on
 ```bash
 make generate-dataset ROWS=70000 THREADS=10   # steps 01-05: sample, validate, generate questions, split, format
 
-make finetune-venv                            # once: sets up the fine-tuning environment (CUDA path only, see below)
+make finetune-venv                            # optional: the CUDA targets below build this environment themselves if missing (see below)
 make finetune-pipeline-cuda                   # steps 06-08: fine-tune, evaluate, merge/quantize — NVIDIA GPU (CUDA)
 # or, on a Mac:
 make finetune-pipeline-mlx LLAMA_CPP_DIR=~/llama.cpp   # steps 06+08 — Apple Silicon (mlx-lm), see FINETUNING.md
@@ -77,7 +88,7 @@ Either way, you end up with a quantized GGUF model under `models/`, ready to ser
 It teaches a small existing LLM to answer a question with our SQL. The model isn't trained from scratch: the base model stays as-is, and only a small add-on (a **LoRA adapter**) is trained on top of it.
 
 1. **Loads the base model**: the model to fine-tune, here Qwen3 0.6B Instruct, already compressed to 4-bit (Hugging Face checkpoint `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`). Training LoRA on a 4-bit model is what **QLoRA** means, and it's what makes training fit on a consumer GPU.
-   **Choosing another model**: `make finetune MODEL=<hugging-face-id>` (see [`docs/PIPELINE.md`](docs/PIPELINE.md) step 06, including `CHAT_TEMPLATE` for other model families).
+   **Choosing another model**: without `MODEL`, `make finetune` lists the models already on the machine and lets you pick one (no download), or offers the default one if none is there. Or name it directly: `make finetune MODEL=<hugging-face-id>` (see [`docs/PIPELINE.md`](docs/PIPELINE.md) step 06, including `CHAT_TEMPLATE` for other model families).
    **No manual download needed**: the first `make finetune` downloads the model from Hugging Face by itself (a few hundred MB). It's public, so no account or token is required, but that first run needs internet access. The model is then cached in `~/.cache/huggingface/` and reused by later runs, including `make evaluate`. On a Mac, `make finetune-mlx` does the same with `mlx-community/Qwen3-0.6B-4bit`. To download it ahead of time (e.g. before going offline): `.venv-finetune/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('unsloth/Qwen3-0.6B-unsloth-bnb-4bit')"`.
 2. **Reads the training files** from step 05: `data/training/train_formatted.jsonl` and `val_formatted.jsonl`. Each example is a short conversation (system instruction → question → SQL), rendered with Qwen's own chat template (`qwen3-instruct`, no `<think>` reasoning).
 3. **Trains the LoRA adapter** (Unsloth + TRL `SFTTrainer`): the model sees every question and learns to produce the matching SQL. Defaults: rank 32, 2 epochs, learning rate 2e-4, batch 2 × 4 gradient-accumulation steps.

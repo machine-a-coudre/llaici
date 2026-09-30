@@ -48,6 +48,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from console import human_size, print_box
 from model_paths import model_dir, model_slug
 
 
@@ -106,7 +107,11 @@ def main() -> None:
         "--outtype", args.outtype,
     ])
 
-    print(f"# GGUF ({args.outtype}) model written to {outfile}")
+    print_box(
+        f"Model ready — GGUF ({args.outtype})",
+        [f"{outfile}  ({human_size(outfile)})"],
+        [f"serve it:  llama-server -m {outfile} --port 8080  (see app/README.md)"],
+    )
 
 
 if __name__ == "__main__":

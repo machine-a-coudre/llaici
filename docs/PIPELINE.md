@@ -157,7 +157,7 @@ make format-for-training
 
 ## Step 06 — Fine-tune, QLoRA on Qwen3-0.6B (`scripts/06_finetune.py`)
 
-`FINETUNING.md` §3/§4. ⚠️ Requires an NVIDIA GPU with CUDA; Unsloth is installed in a dedicated venv by `make finetune-venv` (run automatically by `make finetune`) — unavailable in this development environment, so unlike every step above, **this one has not been run/tested**.
+`FINETUNING.md` §3/§4. ⚠️ Requires an NVIDIA GPU with CUDA; Unsloth is installed in a dedicated venv by `make finetune-venv` (run automatically by `make finetune`). **Tested end to end** on an NVIDIA RTX 50xx (Blackwell) GPU with a small dataset (~100 training examples): training runs, validation loss is reported each epoch and the adapter is saved. Not yet run at full dataset scale (`ROWS=70000`).
 
 ```bash
 make finetune
@@ -181,7 +181,7 @@ make finetune-mlx ITERS=1000 RANK=16     # Apple Silicon path, same idea
 | `MODEL` | `--model-name` / `--model` | `unsloth/Qwen3-0.6B-unsloth-bnb-4bit` (CUDA) / `mlx-community/Qwen3-0.6B-4bit` (MLX) | both |
 | `CHAT_TEMPLATE` | `--chat-template` | `qwen3-instruct` | CUDA |
 
-`MODEL` is a Hugging Face id, downloaded on first use. Pass the same `MODEL` (and `CHAT_TEMPLATE`) to `make evaluate` / `make merge-and-quantize` / `make merge-and-quantize-mlx`: they reload the base model the adapter was trained on — `make finetune-pipeline-cuda MODEL=...` / `finetune-pipeline-mlx MODEL=...` do it for you. When switching to another model family, change `CHAT_TEMPLATE` too (name from Unsloth's `chat_templates.py`). Output directories are named after the model (`scripts/model_paths.py`): the Hugging Face id minus its quantization suffix, so `MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit` writes `models/llaici-qwen3-1.7b-lora/`, then `models/llaici-qwen3-1.7b-gguf/`. Runs with different models sit side by side. The default model keeps `llaici-qwen3-0.6b-*`, as before. Each script's `--output-dir`/`--adapter-dir` flags still override this.
+`MODEL` is a Hugging Face id, downloaded on first use. **Without `MODEL`**, `make finetune` / `make finetune-mlx` list the models already in the local Hugging Face cache (`~/.cache/huggingface/hub`) and let you pick one, no download needed (`scripts/model_picker.py`). With none cached, they offer the default model and warn that it will be downloaded. Without a terminal (CI, piped input), the default model is used with no prompt. Pass the same `MODEL` (and `CHAT_TEMPLATE`) to `make evaluate` / `make merge-and-quantize` / `make merge-and-quantize-mlx`: they reload the base model the adapter was trained on — `make finetune-pipeline-cuda MODEL=...` / `finetune-pipeline-mlx MODEL=...` do it for you. When switching to another model family, change `CHAT_TEMPLATE` too (name from Unsloth's `chat_templates.py`). Output directories are named after the model (`scripts/model_paths.py`): the Hugging Face id minus its quantization suffix, so `MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit` writes `models/llaici-qwen3-1.7b-lora/`, then `models/llaici-qwen3-1.7b-gguf/`. Runs with different models sit side by side. The default model keeps `llaici-qwen3-0.6b-*`, as before. Each script's `--output-dir`/`--adapter-dir` flags still override this.
 
 Anything else (model name, output dir, MLX eval/save cadence...): call the script directly, `--help` lists every flag.
 
@@ -198,7 +198,7 @@ make evaluate
 make evaluate THREADS=10   # see step 01's performance note on --threads/THREADS
 ```
 
-Writes per-example detail (question, gold SQL, generated SQL, outcome) to `data/samples/eval_results.jsonl`, plus a summary: % syntax errors, % empty results, % that ran but returned the wrong rows, % exact match with the gold query's result.
+Writes per-example detail (question, gold SQL, generated SQL, outcome) to `models/llaici-<model>-lora/eval_results.jsonl` (inside the adapter directory it scores, so each model keeps its own results), plus a summary: % syntax errors, % empty results, % that ran but returned the wrong rows, % exact match with the gold query's result.
 
 ---
 

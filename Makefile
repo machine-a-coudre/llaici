@@ -105,6 +105,8 @@ $(FINETUNE_VENV)/.ready:
 #
 # Base model (Hugging Face id, downloaded on first use and cached in ~/.cache/huggingface/):
 #   MODEL          [unsloth/Qwen3-0.6B-unsloth-bnb-4bit / mlx-community/Qwen3-0.6B-4bit]
+#                  unset on `finetune`/`finetune-mlx`: interactive pick among the models
+#                  already in the cache (scripts/model_picker.py), else the default
 #                  also passed to `evaluate`, `merge-and-quantize` and `merge-and-quantize-mlx`:
 #                  they must load the same base model the adapter was trained on, and
 #                  output dirs are named after it (models/llaici-<model>-lora/-gguf...)

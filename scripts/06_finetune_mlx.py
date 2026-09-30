@@ -68,6 +68,10 @@ import tempfile
 from pathlib import Path
 
 from model_paths import model_dir
+from model_picker import choose_model
+from console import human_size, print_box
+
+DEFAULT_MODEL = "mlx-community/Qwen3-0.6B-4bit"
 
 # Deferred: PyYAML ships with mlx-lm's own dependencies (mlx_lm/lora.py imports it
 # directly) but isn't otherwise a project dependency — kept at call time, not
@@ -77,7 +81,7 @@ from model_paths import model_dir
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", default="mlx-community/Qwen3-0.6B-4bit", help="QLoRA base model (quantized MLX checkpoint)")
+    parser.add_argument("--model", default=None, help=f"QLoRA base model (quantized MLX checkpoint); omitted: pick among the models already on this machine, else {DEFAULT_MODEL}")
     parser.add_argument("--data-dir", default="data/training", help="dir holding train_formatted.jsonl/val_formatted.jsonl (scripts/05)")
     parser.add_argument("--adapter-path", default=None, help="default: models/llaici-<model>-mlx-lora (see model_paths.py)")
     parser.add_argument("--max-seq-length", type=int, default=2048)
@@ -99,6 +103,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-mask-prompt", dest="mask_prompt", action="store_false", help="compute loss on the whole example, not just the SQL completion")
     parser.set_defaults(mask_prompt=True)
     args = parser.parse_args()
+    if args.model is None:
+        args.model = choose_model(DEFAULT_MODEL, mlx=True)
+        print(f"# base model: {args.model} — pass the same MODEL= to `make merge-and-quantize-mlx`")
     args.adapter_path = args.adapter_path or model_dir(args.model, "mlx-lora")
     return args
 
@@ -166,7 +173,14 @@ def main() -> None:
     finally:
         Path(config_path).unlink(missing_ok=True)
 
-    print(f"# LoRA adapter saved to {args.adapter_path}")
+    print_box(
+        "Fine-tuning done — LoRA adapter saved",
+        [
+            f"adapter     {args.adapter_path}/  ({human_size(args.adapter_path)})",
+            f"base model  {args.model}",
+        ],
+        [f"export to GGUF:  make merge-and-quantize-mlx MODEL={args.model} LLAMA_CPP_DIR=<llama.cpp clone>"],
+    )
 
 
 if __name__ == "__main__":

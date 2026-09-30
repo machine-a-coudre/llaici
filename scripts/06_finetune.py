@@ -2,10 +2,10 @@
 """FINETUNING.md §3/§4 — configure and run QLoRA fine-tuning on Qwen3-0.6B.
 
 ⚠️ Requires an NVIDIA GPU with CUDA. Unsloth does not support CPU-only training —
-this script targets DESIGN.md's stated hardware (a consumer-grade CUDA GPU), not the
-environment this project's data-prep scripts (00-05) were developed and tested
-in. Unlike those, **this script has not been run** — there's no CUDA GPU
-available in this environment to test it against.
+this script targets DESIGN.md's stated hardware (a consumer-grade CUDA GPU).
+Tested end to end on an NVIDIA RTX 50xx (Blackwell) GPU with a small dataset (~100
+training examples): trains, evaluates each epoch and saves the adapter. Not yet run
+at full dataset scale.
 
 Model/template choices, verified against Unsloth's own docs/source rather than
 guessed (DESIGN.md's original "Qwen 3.5 0.8B" doesn't correspond to any real
@@ -33,7 +33,11 @@ FINETUNING.md §6, a separate step: scripts/08_merge_and_quantize.py).
 
 import argparse
 
-from model_paths import model_dir
+from model_paths import model_dir, model_slug
+from model_picker import choose_model
+from console import human_size, print_box
+
+DEFAULT_MODEL = "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
 
 # Deferred: only importable on a CUDA machine with unsloth/torch/trl/peft/
 # bitsandbytes installed — kept at call time, not module level, so this file can
@@ -42,7 +46,7 @@ from model_paths import model_dir
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model-name", default="unsloth/Qwen3-0.6B-unsloth-bnb-4bit")
+    parser.add_argument("--model-name", default=None, help=f"Hugging Face id; omitted: pick among the models already on this machine, else {DEFAULT_MODEL}")
     parser.add_argument("--chat-template", default="qwen3-instruct")
     parser.add_argument("--train-file", default="data/training/train_formatted.jsonl")
     parser.add_argument("--val-file", default="data/training/val_formatted.jsonl")
@@ -58,6 +62,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--seed", type=int, default=3407)
     args = parser.parse_args()
+    if args.model_name is None:
+        args.model_name = choose_model(DEFAULT_MODEL)
+        print(f"# base model: {args.model_name} — pass the same MODEL= to `make evaluate` / `make merge-and-quantize`")
+        if not model_slug(args.model_name).startswith("qwen3") and args.chat_template == "qwen3-instruct":
+            print("# ⚠️  not a Qwen3 model: pass a matching --chat-template (make ... CHAT_TEMPLATE=)")
     args.output_dir = args.output_dir or model_dir(args.model_name, "lora")
     return args
 
@@ -66,10 +75,12 @@ def main() -> None:
     args = parse_args()
     lora_alpha = args.lora_alpha or args.rank * 2
 
-    from datasets import load_dataset
-    from trl import SFTConfig, SFTTrainer
+    # unsloth first: it patches trl/transformers/peft on import, and warns (possibly
+    # slower training / more memory) if they were already imported.
     from unsloth import FastLanguageModel
     from unsloth.chat_templates import get_chat_template
+    from datasets import load_dataset
+    from trl import SFTConfig, SFTTrainer
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_name,
@@ -136,7 +147,18 @@ def main() -> None:
     # base model and GGUF quantization is FINETUNING.md §6, a separate step.
     model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    print(f"# LoRA adapter saved to {args.output_dir}")
+    model_arg = f" MODEL={args.model_name}"
+    print_box(
+        "Fine-tuning done — LoRA adapter saved",
+        [
+            f"adapter     {args.output_dir}/  ({human_size(args.output_dir)})",
+            f"base model  {args.model_name}",
+        ],
+        [
+            f"check its SQL:      make evaluate{model_arg}",
+            f"export to GGUF:     make merge-and-quantize{model_arg}",
+        ],
+    )
 
 
 if __name__ == "__main__":
