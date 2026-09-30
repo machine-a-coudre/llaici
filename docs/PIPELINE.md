@@ -199,7 +199,33 @@ Saves a LoRA adapter to `models/llaici-<model>-lora/` (`llaici-qwen3-0.6b-lora/`
 ```bash
 make evaluate
 make evaluate THREADS=10   # see step 01's performance note on --threads/THREADS
+make evaluate MAX_EVAL=300   # random sample of 300 validation questions: minutes instead of hours at ROWS=5000
 ```
+
+Each validation question is a full generation, so evaluating all of them (~2,000 at `ROWS=5000`) can take hours. `MAX_EVAL=N` (`--max-examples`) evaluates a random sample of N instead, drawn with a fixed seed: two models evaluated with the same `MAX_EVAL` see the same questions, so their scores are comparable. ~300 gives a representative score (roughly ±5 points on the % correct); keep the full evaluation for the final model.
+
+**When to run the full evaluation.** Once, on the model you intend to keep, right before exporting it (step 08):
+
+```
+┌─ Tuning (as many rounds as needed) ─────────────────────────────┐
+│  make finetune  →  make evaluate MAX_EVAL=300                   │
+│        ↑                     │                                   │
+│        └── adjust (data, EPOCHS, RANK…) ←──┘                     │
+└─────────────────────────────────────────────────────────────────┘
+                     │  score is good enough
+                     ▼
+     make evaluate                  ← full evaluation (~2-3 h at ROWS=5000)
+                     │  confirms the sample's score
+                     ▼
+     make merge-and-quantize        ← GGUF export (step 08)
+                     ▼
+     llama-server + make app-up     ← serve it in the demo app
+```
+
+- **While tuning, the sample is enough**: you compare variants against each other, and a fixed sample measures the difference between two runs well. Paying hours per round would tell you little more.
+- **The full run** gives the exact score (the sample is only accurate to ~±5 points), the one worth reporting, and enough examples per template/category to see precisely what still fails in `eval_results.jsonl`.
+- **Don't tune against the full run**: going back and forth on its score ends up selecting the settings that happen to work on *those* questions, and the score gets optimistic. Sample for tuning, full run for the final check.
+- `make finetune-pipeline-cuda` chains finetune → evaluate → merge, so without `MAX_EVAL` it runs the full evaluation every time: pass `MAX_EVAL=300` while tuning, or run the steps separately.
 
 Writes per-example detail (question, gold SQL, generated SQL, outcome) to `models/llaici-<model>-lora/eval_results.jsonl` (inside the adapter directory it scores, so each model keeps its own results), plus a summary: % syntax errors, % empty results, % that ran but returned the wrong rows, % exact match with the gold query's result.
 

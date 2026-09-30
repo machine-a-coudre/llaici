@@ -34,6 +34,7 @@ Run (on a CUDA machine, after scripts/06_finetune.py has produced an adapter):
 
 import argparse
 import json
+import random
 import re
 from pathlib import Path
 
@@ -131,6 +132,15 @@ def main() -> None:
         help="DuckDB SET threads=N (default 2, kept low on purpose); tune to roughly "
         "the machine's CPU core count for a faster large run (e.g. --threads 10)",
     )
+    parser.add_argument(
+        "--max-examples",
+        type=int,
+        default=None,
+        help="evaluate a random sample of N validation questions instead of all of them: each "
+        "one is a full generation, so ~2,000 questions (ROWS=5000) can take hours; ~300 gives "
+        "a representative score in a fraction of the time (default: all)",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="for --max-examples: same seed, same sample")
     args = parser.parse_args()
     args.adapter_dir = args.adapter_dir or model_dir(args.model_name, "lora")
     args.out = args.out or f"{args.adapter_dir}/eval_results.jsonl"
@@ -159,9 +169,17 @@ def main() -> None:
 
     counts = {"syntax_error": 0, "empty": 0, "ok_mismatch": 0, "ok_match": 0}
     truncated = 0
-    with open(args.val_file, encoding="utf-8") as fin, open(args.out, "w", encoding="utf-8") as fout:
-        for line in fin:
-            row = json.loads(line)
+    with open(args.val_file, encoding="utf-8") as fin:
+        val_rows = [json.loads(line) for line in fin]
+    args.val_total = len(val_rows)
+    if args.max_examples is not None and args.max_examples < len(val_rows):
+        # Fixed seed: two models evaluated with the same --max-examples see the same
+        # questions, so their scores are comparable.
+        val_rows = random.Random(args.seed).sample(val_rows, args.max_examples)
+        print(f"# evaluating a random sample of {len(val_rows)} of {args.val_total} validation questions (--max-examples)")
+
+    with open(args.out, "w", encoding="utf-8") as fout:
+        for row in val_rows:
             question, gold_sql = row["question"], row["sql"]
 
             generated_sql, was_truncated = generate_sql(model, tokenizer, question, args.max_new_tokens)
@@ -210,7 +228,8 @@ def print_verdict(counts: dict[str, int], truncated: int, args: argparse.Namespa
         "syntax_error": "SQL error",
     }
     rows = [f"{labels[b]:<32} {counts[b]:>5}  ({pct[b]:5.1f}%)" for b in ("ok_match", "ok_mismatch", "empty", "syntax_error")]
-    rows += ["", f"{total} validation questions — detail: {args.out}"]
+    sampled = f" (random sample of {args.val_total})" if total < args.val_total else ""
+    rows += ["", f"{total} validation questions{sampled} — detail: {args.out}"]
 
     advice = []
     if status != "ok":

@@ -34,6 +34,17 @@ The dataset only had correctly accented questions, so for the model "pres" was a
 
 No to both. `make finetune` builds `.venv-finetune/` itself if missing, and the first `FastLanguageModel.from_pretrained(...)` call downloads the base model from Hugging Face (public, no token) into `~/.cache/huggingface/`, reused afterwards. Without `MODEL=`, `make finetune` lists the models already cached and lets you pick one (`scripts/model_picker.py`).
 
+### The model picker lists two Qwen3 0.6B
+
+```
+1) unsloth/Qwen3-0.6B-unsloth-bnb-4bit  592.1M  (default)
+2) unsloth/qwen3-0.6b  1.2G
+```
+
+Not two models: the same Qwen3 0.6B in two formats. The 4-bit one is the training base (QLoRA), downloaded by the first `make finetune`. The 16-bit one is what step 08 merges the adapter into (merging into already-compressed weights would add rounding error on top), downloaded by the first `make merge-and-quantize`, which derives its name from the 4-bit one by dropping the `-unsloth-bnb-4bit` suffix. The picker lists every LLM in the Hugging Face cache, so it shows both.
+
+Train on **1** (the default). Choosing 2 would likely work too (Unsloth would compress it to 4-bit on load) but loads slower for no gain. Keep both cached: deleting the 16-bit one only makes step 08 download it again (1.2 GB).
+
 ### Evaluate / merge can't find the adapter, or use the wrong base model
 
 Output directories are named after the base model (`models/llaici-<model>-lora/`). If you trained with a non-default `MODEL` (on the command line or picked interactively), pass the same `MODEL=` to `make evaluate` and `make merge-and-quantize`: they default to Qwen3 0.6B otherwise. Changing model family (not Qwen3) also needs a matching `CHAT_TEMPLATE`.
@@ -60,6 +71,16 @@ Expected on a test dataset: `ROWS=50` → ~111 training examples → 28 steps (1
 ---
 
 ## Evaluation (step 07)
+
+### `make evaluate` takes hours
+
+Each validation question is a full generation (up to ~650 tokens of SQL), run one at a time. At `ROWS=5000` there are ~2,000 validation questions, so a full evaluation can take 2-3 hours, longer than training itself. Use a sample while iterating:
+
+```bash
+make evaluate MAX_EVAL=300
+```
+
+It evaluates a random sample of 300 questions, drawn with a fixed seed (`--seed`, default 42): two models evaluated with the same `MAX_EVAL` see the same questions, so their scores are directly comparable. The verdict box says when a sample was used ("300 validation questions (random sample of 2000)"). With 300 questions the % correct is accurate to roughly ±5 points: enough to compare two trainings, not to split hairs. Keep the full evaluation for the final model.
 
 ### Many `syntax_error`, some with `Parser Error: syntax error at end of input`
 
@@ -96,7 +117,7 @@ Expected at this size — not a sign the approach fails. Scale the dataset up be
 3. **Watch the loss curves from step 06.** If `eval_loss` rises while training loss keeps falling, the model is overfitting: fewer epochs, not more. If both are still falling at the end, more epochs can help.
 4. **Then hyperparameters**: a higher LoRA rank (`RANK=64`) gives the adapter more capacity; a bigger base model (`MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit`) understands questions better but is slower and bigger to serve.
 
-Change one thing at a time and re-run `make finetune` + `make evaluate`, so you know what helped.
+Change one thing at a time and re-run `make finetune` + `make evaluate`, so you know what helped. Use the same `MAX_EVAL` for every run (see "`make evaluate` takes hours" above): same sample, comparable scores.
 
 ### Known gaps in `07_evaluate.py`
 
@@ -141,5 +162,5 @@ The model never ended its answer: under greedy decoding (the app asks for `tempe
 
 ### A question that "worked" during evaluation fails in the app
 
-Evaluation results produced before `07_evaluate.py` switched to greedy decoding came from *random sampling*: a success there could be luck. The app always decodes greedily, like the current evaluation. Re-run `make evaluate` for a score that matches what the app will do.
+Evaluation results produced before `07_evaluate.py` switched to greedy decoding came from *random sampling*: a success there could be luck. The app always decodes greedily, like the current evaluation. Re-run `make evaluate` (or `make evaluate MAX_EVAL=300` for a quicker score) for a result that matches what the app will do.
 

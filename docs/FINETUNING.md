@@ -99,6 +99,36 @@ Unsloth's kernels are CUDA/Triton-based — it doesn't run on a Mac (MPS support
 
 ⚠️ Same CUDA/Unsloth requirement as §3/§4's `06_finetune.py`, plus a LoRA adapter it produces. Tested end to end on a small-dataset adapter.
 
+### Tuning: what can be adjusted to improve the score
+
+"Tuning" means everything you can change to raise the evaluation score before settling on a model. Three families, from most to least effective:
+
+**1. The data: the main lever**
+
+| Setting | Command | Effect |
+|---|---|---|
+| Quantity | `make generate-dataset ROWS=5000` | more examples per template and per category: the model learns the schema (tables, columns) and the values (`subtype`/`class`) |
+| Balance across templates | `MAX_PER_TEMPLATE=…` | keeps a very frequent template from drowning out the others |
+| Accent-less variants | `NO_ACCENT_RATIO=0.5` | more robust to questions typed without accents |
+| Question phrasings | `PHRASES` lists in `03_generate_questions.py` | more ways to ask the same thing: the model copes better with how real users phrase questions |
+
+**2. Training: `make finetune`'s hyperparameters** (full list in `PIPELINE.md` step 06)
+
+| Setting | Default | When to change it |
+|---|---|---|
+| `EPOCHS` | 2 | ↑ if both losses are still falling at the end; ↓ if `eval_loss` rises while training loss falls (memorizing) |
+| `RANK` | 32 | ↑ (64) gives the adapter more capacity, if the score stops improving with more data |
+| `LR` | 2e-4 | ↓ if the loss is unstable or jumps around |
+| `BATCH_SIZE` / `GRAD_ACCUM` | 2 / 4 | mostly to fit in GPU memory; little effect on quality |
+
+**3. The base model**
+
+`MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit`: a bigger model understands questions better, but is slower to train and serve, and gives a bigger GGUF.
+
+**One tuning round**: change **one thing only** (e.g. `EPOCHS=3`), re-run `make finetune` then `make evaluate MAX_EVAL=300`, compare with the previous round's score, keep the change if it helped. Always use the same `MAX_EVAL` so the scores stay comparable, and keep the full evaluation for the model you settle on (see `PIPELINE.md` step 07, "When to run the full evaluation").
+
+**Data first.** With too little data (e.g. the ~100-example test run, `ROWS=50`), no hyperparameter can make up for it: the model hasn't seen the tables, columns and categories enough to learn them. Only once it's trained on a real dataset do families 2 and 3 have a measurable effect.
+
 ---
 
 ## 6. Merge and quantize

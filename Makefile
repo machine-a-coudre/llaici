@@ -140,9 +140,11 @@ finetune-mlx:
 
 # STEP 5, §5: evaluate the fine-tuned model's generated SQL against real DuckDB (see FINETUNING.md, scripts/07_evaluate.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
+# MAX_EVAL=N evaluates a fixed random sample of N validation questions (each one is a
+# full generation: all ~2,000 at ROWS=5000 can take hours). Example: make evaluate MAX_EVAL=300
 evaluate: $(FINETUNE_VENV)/.ready
 	$(PRINT_THREADS)
-	$(FINETUNE_PY) scripts/07_evaluate.py --threads $(THREADS) $(UNSLOTH_MODEL_ARGS)
+	$(FINETUNE_PY) scripts/07_evaluate.py --threads $(THREADS) $(UNSLOTH_MODEL_ARGS) $(if $(MAX_EVAL),--max-examples $(MAX_EVAL))
 
 # STEP 5, §6: merge the LoRA adapter (PEFT, on CPU) + convert/quantize to GGUF
 # (llama.cpp's convert_hf_to_gguf.py) — see FINETUNING.md, scripts/08_merge_and_quantize.py.
