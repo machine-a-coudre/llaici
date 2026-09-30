@@ -27,8 +27,8 @@ Run (on a CUDA machine, after `pip install unsloth`):
 
 Input: data/training/train_formatted.jsonl / val_formatted.jsonl (scripts/05_format_for_training.py),
 each row {"messages": [{"role": ..., "content": ...}, ...]}.
-Output: a merged LoRA adapter directory (FINETUNING.md §6 - merge/quantize is the
-next, separate step, not done by this script).
+Output: the LoRA adapter only, in --output-dir (not merged — merge/quantize is
+FINETUNING.md §6, a separate step: scripts/08_merge_and_quantize.py).
 """
 
 import argparse

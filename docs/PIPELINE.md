@@ -161,9 +161,25 @@ make format-for-training
 
 ```bash
 make finetune
-# or directly, to override defaults:
-python3 scripts/06_finetune.py --rank 16 --epochs 3
+make finetune EPOCHS=3 RANK=16 LR=1e-4   # override hyperparameters; unset ones keep the script default
+make finetune-mlx ITERS=1000 RANK=16     # Apple Silicon path, same idea
 ```
+
+| Variable | Flag | Default | Path |
+|---|---|---|---|
+| `EPOCHS` | `--epochs` | 2 | CUDA |
+| `ITERS` | `--iters` | 600 | MLX |
+| `RANK` | `--rank` | 32 | both |
+| `LORA_ALPHA` | `--lora-alpha` | 2 × `RANK` | CUDA |
+| `LORA_SCALE` | `--lora-scale` | 20.0 | MLX |
+| `LORA_DROPOUT` | `--lora-dropout` | 0.0 | both |
+| `LR` | `--lr` / `--learning-rate` | 2e-4 | both |
+| `BATCH_SIZE` | `--per-device-batch-size` / `--batch-size` | 2 (CUDA) / 4 (MLX) | both |
+| `GRAD_ACCUM` | `--gradient-accumulation-steps` | 4 | CUDA |
+| `MAX_SEQ_LENGTH` | `--max-seq-length` | 2048 | both |
+| `SEED` | `--seed` | 3407 | both |
+
+Anything else (model name, output dir, MLX eval/save cadence...): call the script directly, `--help` lists every flag.
 
 Saves a LoRA adapter to `models/llaici-qwen3-0.6b-lora/` — merging into the base model and GGUF quantization (step 08) is a separate, later step.
 

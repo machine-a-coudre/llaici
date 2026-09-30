@@ -86,16 +86,41 @@ $(FINETUNE_VENV)/.ready:
 	$(FINETUNE_PY) -c "import unsloth; print('unsloth', unsloth.__version__)"
 	touch $@
 
+# Fine-tuning hyperparameters: each one is only passed when set, so an unset one
+# keeps the script's own default (shown in brackets; `finetune` / `finetune-mlx` when
+# they differ). Shared by both paths where the flag exists in both.
+#   RANK          LoRA rank [32]
+#   LORA_DROPOUT  LoRA dropout [0.0]
+#   LR            learning rate [2e-4]
+#   BATCH_SIZE    per-device batch size [2 / 4]
+#   MAX_SEQ_LENGTH  max tokens per example [2048]
+#   SEED          random seed [3407]
+# `finetune` only:
+#   EPOCHS        training epochs [2]
+#   LORA_ALPHA    LoRA alpha [2 x RANK]
+#   GRAD_ACCUM    gradient accumulation steps [4]
+# `finetune-mlx` only (mlx-lm counts steps, not epochs):
+#   ITERS         training iterations [600]
+#   LORA_SCALE    mlx-lm's LoRA alpha/scale [20.0]
+FINETUNE_COMMON_ARGS = $(if $(RANK),--rank $(RANK)) $(if $(LORA_DROPOUT),--lora-dropout $(LORA_DROPOUT)) \
+	$(if $(MAX_SEQ_LENGTH),--max-seq-length $(MAX_SEQ_LENGTH)) $(if $(SEED),--seed $(SEED))
+
 # STEP 5 (fine-tuning), §3/§4: QLoRA fine-tune Qwen3-0.6B (see FINETUNING.md, scripts/06_finetune.py)
 # ⚠️ Requires a CUDA GPU — runs in the venv set up by `finetune-venv` (built automatically).
+# Example: make finetune EPOCHS=3 RANK=16 LR=1e-4
 finetune: $(FINETUNE_VENV)/.ready
-	$(FINETUNE_PY) scripts/06_finetune.py
+	$(FINETUNE_PY) scripts/06_finetune.py $(FINETUNE_COMMON_ARGS) \
+		$(if $(EPOCHS),--epochs $(EPOCHS)) $(if $(LR),--lr $(LR)) $(if $(LORA_ALPHA),--lora-alpha $(LORA_ALPHA)) \
+		$(if $(BATCH_SIZE),--per-device-batch-size $(BATCH_SIZE)) $(if $(GRAD_ACCUM),--gradient-accumulation-steps $(GRAD_ACCUM))
 
 # STEP 5, §3/§4 Apple Silicon alternative: same job as `finetune`, but via mlx-lm
 # instead of Unsloth, since Unsloth requires a CUDA GPU (see FINETUNING.md).
 # ⚠️ Requires `pip install "mlx-lm[train]"` on a Mac.
+# Example: make finetune-mlx ITERS=1000 RANK=16
 finetune-mlx:
-	python3 scripts/06_finetune_mlx.py
+	python3 scripts/06_finetune_mlx.py $(FINETUNE_COMMON_ARGS) \
+		$(if $(ITERS),--iters $(ITERS)) $(if $(LR),--learning-rate $(LR)) $(if $(LORA_SCALE),--lora-scale $(LORA_SCALE)) \
+		$(if $(BATCH_SIZE),--batch-size $(BATCH_SIZE))
 
 # STEP 5, §5: evaluate the fine-tuned model's generated SQL against real DuckDB (see FINETUNING.md, scripts/07_evaluate.py)
 # ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.

@@ -1,6 +1,14 @@
 # LLaIci
 
-Ask a geographic question in plain language ("restaurants in Madrid", "cities bordering Morocco") and get a map back. Under the hood: a small LLM fine-tuned to translate the question into spatial SQL, run against Overture Maps data in DuckDB.
+A toolkit to train a small LLM (eg. Qwen3 0.6B) to turn a geographic question in plain language, French or English ("restaurants in Madrid", "villes frontalières du Maroc"), into a spatial DuckDB SQL query over [Overture Maps](https://overturemaps.org/) data. The model targets a custom schema: logical views built on top of the Overture extracts (see [`docs/SCHEMA.md`](docs/SCHEMA.md)), not the raw Overture tables.
+
+It covers the whole chain:
+- **Dataset generation**: real Overture entities fill hand-written SQL templates, each query is validated by execution, and FR/EN questions are generated for it.
+- **Fine-tuning with LoRA (QLoRA)**: the base model stays frozen and 4-bit quantized, and only a small adapter is trained on top, so it fits on a consumer GPU.
+- **Export and demo**: the result is exported to GGUF and served in a demo app that asks the question and shows the result on a map.
+
+> [!NOTE]
+> The model only knows the view names and columns, not what's behind them. Training runs on the local Parquet extracts, but once trained, the same model could query another backend, such as a PostgreSQL/PostGIS database attached through DuckDB's `postgres` extension, as long as the views keep exposing the same columns. This hasn't been tested. Expect to convert PostGIS geometries in the views, and note that spatial filters (`ST_Within`, `ST_DWithin_Spheroid`...) aren't pushed down to PostgreSQL: DuckDB pulls the rows and computes them itself, which can be slow on large tables.
 
 ## Documentation
 
@@ -63,6 +71,22 @@ make finetune-pipeline-mlx LLAMA_CPP_DIR=~/llama.cpp   # steps 06+08 — Apple S
 `make finetune-venv` creates a dedicated Python environment in `.venv-finetune/` (with [uv](https://docs.astral.sh/uv/)) holding Unsloth and a CUDA build of PyTorch, then checks that the GPU is actually usable from it. The CUDA targets (`finetune`, `evaluate`, `merge-and-quantize`) run inside that environment and build it automatically if it's missing, so this step is optional — running it first just surfaces install problems early. The PyTorch CUDA version defaults to `cu130`; override it with `TORCH_BACKEND` (e.g. `make finetune-venv TORCH_BACKEND=cu128`) if your driver doesn't support CUDA 13.0. To rebuild from scratch: `rm -rf .venv-finetune`.
 
 Either way, you end up with a quantized GGUF model under `models/`, ready to serve with `llama-server` (see [`app/README.md`](app/README.md)).
+
+### What `make finetune` (step 06) actually does
+
+It teaches a small existing LLM to answer a question with our SQL. The model isn't trained from scratch: the base model stays as-is, and only a small add-on (a **LoRA adapter**) is trained on top of it.
+
+1. **Loads the base model**: `unsloth/Qwen3-0.6B-unsloth-bnb-4bit`, Qwen3 0.6B Instruct already quantized to 4-bit. It's downloaded from Hugging Face on the first run (a few hundred MB, cached afterwards). 4-bit + LoRA = **QLoRA**, which is what makes training fit on a consumer GPU.
+2. **Reads the training files** from step 05: `data/training/train_formatted.jsonl` and `val_formatted.jsonl`. Each example is a short conversation (system instruction → question → SQL), rendered with Qwen's own chat template (`qwen3-instruct`, no `<think>` reasoning).
+3. **Trains the LoRA adapter** (Unsloth + TRL `SFTTrainer`): the model sees every question and learns to produce the matching SQL. Defaults: rank 32, 2 epochs, learning rate 2e-4, batch 2 × 4 gradient-accumulation steps.
+4. **Evaluates on the validation set at the end of each epoch** and logs the loss every 10 steps. Watch the **validation loss** (`eval_loss`): the dataset is template-generated, so training loss can drop just by memorizing SQL skeletons. Only the validation loss tells whether the model generalizes.
+5. **Saves the adapter** to `models/llaici-qwen3-0.6b-lora/` (a few tens of MB, plus intermediate `checkpoint-*` folders). This isn't a usable model on its own yet: step 07 (`make evaluate`) checks its SQL against DuckDB, and step 08 (`make merge-and-quantize`) merges it into the base model and exports the GGUF for `llama-server`.
+
+Good to know:
+- **Needs an NVIDIA GPU with CUDA** (runs in `.venv-finetune/`, built automatically). On a Mac, use `make finetune-mlx` instead: same job via mlx-lm.
+- **Dataset size matters**: a test run like `ROWS=50` (~100 examples) only checks that the chain works; for a model worth using, generate the dataset with `ROWS=70000` (~30 min to 1 h of training, per `DESIGN.md`'s estimate).
+- **Hyperparameters**: pass them to make, e.g. `make finetune EPOCHS=3 RANK=16 LR=1e-4`. Any you leave out keep their default. Full list (`EPOCHS`, `RANK`, `LORA_ALPHA`, `LORA_DROPOUT`, `LR`, `BATCH_SIZE`, `GRAD_ACCUM`, `MAX_SEQ_LENGTH`, `SEED`, plus `ITERS`/`LORA_SCALE` for `finetune-mlx`) in [`docs/PIPELINE.md`](docs/PIPELINE.md) step 06. The same variables also work with `make finetune-pipeline-cuda` / `finetune-pipeline-mlx`.
+- Details and rationale: [`docs/FINETUNING.md`](docs/FINETUNING.md) §3-4.
 
 ## Run the DuckDB UI
 
