@@ -25,7 +25,7 @@ Run (on a CUDA machine, after `pip install unsloth`):
     python3 scripts/06_finetune.py
     python3 scripts/06_finetune.py --rank 16 --epochs 3 --lr 1e-4
 
-Input: data/samples/train_formatted.jsonl / val_formatted.jsonl (scripts/05_format_for_training.py),
+Input: data/training/train_formatted.jsonl / val_formatted.jsonl (scripts/05_format_for_training.py),
 each row {"messages": [{"role": ..., "content": ...}, ...]}.
 Output: a merged LoRA adapter directory (FINETUNING.md §6 - merge/quantize is the
 next, separate step, not done by this script).
@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-name", default="unsloth/Qwen3-0.6B-unsloth-bnb-4bit")
     parser.add_argument("--chat-template", default="qwen3-instruct")
-    parser.add_argument("--train-file", default="data/samples/train_formatted.jsonl")
-    parser.add_argument("--val-file", default="data/samples/val_formatted.jsonl")
+    parser.add_argument("--train-file", default="data/training/train_formatted.jsonl")
+    parser.add_argument("--val-file", default="data/training/val_formatted.jsonl")
     parser.add_argument("--output-dir", default="models/llaici-qwen3-0.6b-lora")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     # LoRA (DESIGN.md defaults: rank 16-32, lr 2e-4, 2 epochs — see FINETUNING.md §3)

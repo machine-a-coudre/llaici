@@ -128,7 +128,7 @@ make generate-questions
 make generate-questions MAX_PER_TEMPLATE=5000   # cap pairs per template (useful at ROWS=70000 scale)
 ```
 
-⚠️ **TODO (next step):** FR phrasings have no article before country/region names ("où se trouve Espagne" instead of "l'Espagne", "frontalières de Maroc" instead of "du Maroc") — see the TODO in `03_generate_questions.py`.
+**FR articles and contractions.** Countries take an article in French ("où se trouve **l'**Espagne", "villes frontalières **du** Maroc", "où se trouvent **les** Pays-Bas"), cities don't ("à Lyon"). The article comes from `FR_COUNTRY_GENDER`, a hand-written ISO code → gender table (Overture has no gender data), looked up via `place_country_code` — set by `01_sample_entities.py` only when the place *is* the country (`bordering`, and the country branch of `show_division`) — and only when step 02 picked the FR exonym (`place_is_exonym`): a kept local name stays bare ("de España"). A code missing from the table gets no article. Every FR "de/à + place" is contracted or elided: du/des/au/aux, "d'Orléans", and cities named "Le …"/"Les …" too ("au Havre", "des Sables-d'Olonne"). The SQL keeps the bare name (`ILIKE '%Espagne%'`), so the model learns to drop the article. Rivers (`{feature}`) still get none ("le long de Seine").
 
 ---
 
@@ -146,6 +146,8 @@ make split-dataset VAL_RATIO=0.05   # default 0.1 (10%)
 ## Step 05 — Format for training (`scripts/05_format_for_training.py`)
 
 Converts `train.jsonl`/`val.jsonl` into the `messages` (system/user/assistant) format `tokenizer.apply_chat_template()` / Unsloth expect — the exact Qwen ChatML tokens are applied later, at training time, by Qwen's own tokenizer, not hand-written here (`FINETUNING.md` §1a/1b).
+
+Output goes to **`data/training/`** (`train_formatted.jsonl`, `val_formatted.jsonl`), not `data/samples/`: these are the only files step 06 trains on, kept apart from the intermediate ones. The script ends with a summary box pointing at them. `07_evaluate.py` still reads the raw `data/samples/val.jsonl` (step 04).
 
 ```bash
 make format-for-training

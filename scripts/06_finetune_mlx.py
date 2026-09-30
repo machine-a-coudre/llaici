@@ -76,7 +76,7 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default="mlx-community/Qwen3-0.6B-4bit", help="QLoRA base model (quantized MLX checkpoint)")
-    parser.add_argument("--data-dir", default="data/samples", help="dir holding train_formatted.jsonl/val_formatted.jsonl (scripts/05)")
+    parser.add_argument("--data-dir", default="data/training", help="dir holding train_formatted.jsonl/val_formatted.jsonl (scripts/05)")
     parser.add_argument("--adapter-path", default="models/llaici-qwen3-0.6b-mlx-lora")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     # LoRA (DESIGN.md defaults: rank 16-32, lr 2e-4 — same target as scripts/06_finetune.py's

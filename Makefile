@@ -1,6 +1,8 @@
 BBOX ?= -9.72,35.91,3.59,43.82 # or -9.84,35.55,3.43,44.43
 PARQUET_DIR := data/parquet
 SAMPLES_DIR := data/samples
+# Final fine-tuning inputs only (scripts/05 output), kept apart from the intermediate files above
+TRAINING_DIR := data/training
 ROWS ?= 100
 THREADS ?= 2
 TEMPLATE ?= all
@@ -62,12 +64,12 @@ split-dataset:
 
 # STEP 5 (fine-tuning) prep, steps 1a/1b: format train/val pairs as Qwen chat messages (see FINETUNING.md, scripts/05_format_for_training.py)
 format-for-training:
-	python3 scripts/05_format_for_training.py --dir $(SAMPLES_DIR)
+	python3 scripts/05_format_for_training.py --dir $(SAMPLES_DIR) --out-dir $(TRAINING_DIR)
 
 # STEP 4 + STEP 5 prep, full pipeline: sample -> validate -> generate questions ->
 # split train/val -> format for training (see DESIGN.md/FINETUNING.md). Chains the
-# 5 targets above in order so `data/samples/train.jsonl` and `val.jsonl` come out
-# ready for scripts/06_finetune.py. Example: make generate-dataset ROWS=70000
+# 5 targets above in order so `data/training/train_formatted.jsonl` and
+# `val_formatted.jsonl` come out ready for scripts/06_finetune.py. Example: make generate-dataset ROWS=70000
 generate-dataset: sample-entities validate-samples generate-questions split-dataset format-for-training
 
 # STEP 5 (fine-tuning), setup for the CUDA path: creates $(FINETUNE_VENV) with Unsloth
@@ -114,7 +116,7 @@ merge-and-quantize-mlx:
 	python3 scripts/08_merge_and_quantize_mlx.py --llama-cpp-dir $(LLAMA_CPP_DIR)
 
 # STEP 5, full pipeline (CUDA/Unsloth path): fine-tune -> evaluate -> merge/quantize
-# to GGUF (FINETUNING.md §3-6). Assumes data/samples/{train,val}_formatted.jsonl
+# to GGUF (FINETUNING.md §3-6). Assumes data/training/{train,val}_formatted.jsonl
 # already exist (see `generate-dataset`). Chains the 3 targets above in order.
 # ⚠️ Requires a CUDA GPU (venv set up automatically, see `finetune-venv`).
 finetune-pipeline-cuda: finetune evaluate merge-and-quantize

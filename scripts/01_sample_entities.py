@@ -673,7 +673,9 @@ def sample_bordering(con, c: Country) -> dict | None:
     if row is None:
         return None
     place_name, city_name = row
-    return {"template": "bordering", "place": place_name, "city": city_name, "distance_m": 20000}
+    # The place *is* the country: 03_generate_questions.py looks its FR article up
+    # by ISO code ("villes frontalières du Maroc").
+    return {"template": "bordering", "place": place_name, "place_country_code": c.code, "city": city_name, "distance_m": 20000}
 
 
 # ── Template 12: Cities in a direction (candidate = divisions locality, not
@@ -734,7 +736,8 @@ def sample_show_division(con, c: Country) -> dict | None:
     inside it, so training examples cover both "show me France" and "show me Lyon"
     phrasings (TEMPLATES.md template #11). No infrastructures/water join needed —
     this template only resolves a name to divisions/division_areas geometry."""
-    if random.random() < 0.3:
+    is_country = random.random() < 0.3
+    if is_country:
         row = con.execute(
             "SELECT name FROM divisions WHERE id = (SELECT division_id FROM division_areas WHERE id = ?)",
             [c.id],
@@ -753,7 +756,11 @@ def sample_show_division(con, c: Country) -> dict | None:
         ).fetchone()
     if row is None:
         return None
-    return {"template": "show_division", "place": row[0]}
+    result = {"template": "show_division", "place": row[0]}
+    if is_country:
+        # Same as sample_bordering: lets 03 add the FR article ("montre-moi l'Espagne").
+        result["place_country_code"] = c.code
+    return result
 
 
 # ── Template 9: Places by category (requires the `places` view — see

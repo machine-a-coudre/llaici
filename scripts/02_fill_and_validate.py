@@ -537,6 +537,10 @@ def main() -> None:
                     no_name += 1
                     continue
                 params = {**base_params, key: name}
+                if "place_country_code" in base_params:
+                    # 03 adds the FR article to the exonym ("l'Espagne") only, not to
+                    # a kept local name ("España").
+                    params["place_is_exonym"] = name == exonyms.get(lang)
                 if name not in results:
                     sql = BUILDERS[template](params).strip()
                     try:

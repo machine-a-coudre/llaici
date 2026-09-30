@@ -18,7 +18,7 @@ Rather than hand-writing Qwen's ChatML special tokens (`<|im_start|>`, `<|im_end
 
 ### 1b. Convert `dataset.jsonl` into that format
 
-**Implemented**: `scripts/05_format_for_training.py` (`make format-for-training`). Reads `train.jsonl`/`val.jsonl` (from §1c) and writes `train_formatted.jsonl`/`val_formatted.jsonl`, each row a `{"messages": [...]}` object: a system turn (short, fixed instruction — "respond with SQL only, no explanation"; override via `--system`, or `--system ""` to omit), a user turn (the question), and an assistant turn (the SQL). Verified: 576 train / 63 val examples converted, structure spot-checked.
+**Implemented**: `scripts/05_format_for_training.py` (`make format-for-training`). Reads `train.jsonl`/`val.jsonl` (from §1c) and writes `data/training/train_formatted.jsonl`/`val_formatted.jsonl` (a separate folder from `data/samples/`, so the files training actually consumes stand apart), each row a `{"messages": [...]}` object: a system turn (short, fixed instruction — "respond with SQL only, no explanation"; override via `--system`, or `--system ""` to omit), a user turn (the question), and an assistant turn (the SQL). Verified: 576 train / 63 val examples converted, structure spot-checked.
 
 ### 1c. Split train / validation
 
@@ -66,7 +66,7 @@ Unsloth's kernels are CUDA/Triton-based — it doesn't run on a Mac (MPS support
 
 `scripts/06_finetune_mlx.py` (`make finetune-mlx`) does the same job via [`mlx-lm`](https://github.com/ml-explore/mlx-lm) instead, which runs natively on Apple Silicon:
 - Wraps the `mlx_lm.lora` CLI (via subprocess) rather than an internal Python API — `mlx_lm/LORA.md` only documents CLI usage, no training API is documented to call directly.
-- Copies `scripts/05`'s output (`train_formatted.jsonl`/`val_formatted.jsonl`) into a `data/samples/mlx/{train,valid}.jsonl` layout — `mlx_lm.lora`'s data loader requires those exact filenames in its `--data` directory.
+- Copies `scripts/05`'s output (`train_formatted.jsonl`/`val_formatted.jsonl`) into a `data/training/mlx/{train,valid}.jsonl` layout — `mlx_lm.lora`'s data loader requires those exact filenames in its `--data` directory.
 - LoRA rank/dropout/scale have no CLI flag in `mlx_lm.lora` — only settable via a YAML `-c/--config` file (confirmed in `mlx_lm/lora.py`'s `build_parser()`), so the script always writes one, rather than mixing CLI flags and a config file.
 - Base model: `mlx-community/Qwen3-0.6B-4bit` — mlx-lm's own `CONFIG_DEFAULTS["model"]` is literally `"Qwen/Qwen3-0.6b"`, and real Qwen3 LoRA fine-tunes exist in the wild (e.g. a Text-to-SQL MLX LoRA fine-tune of Qwen3.5 at `sciences44/mlx-lora-finetune`) — `LORA.md`'s prose model list not naming Qwen3 explicitly is stale documentation, not a real block. ⚠️ [ml-explore/mlx#2616](https://github.com/ml-explore/mlx/issues/2616): some mlx-lm versions cover fewer trainable parameters than expected for Qwen3 LoRA — worth checking the printed trainable-parameter count if results look off.
 - `--mask-prompt` defaults **on** here (loss computed only on the SQL completion, not the question) — mlx-lm exposes this directly, unlike `06_finetune.py`'s `SFTTrainer` call.

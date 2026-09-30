@@ -79,24 +79,113 @@ PLACE_CATEGORY_LABELS = {
 
 DIRECTION_EN = {"north": "north", "south": "south", "east": "east", "west": "west"}
 DIRECTION_FR = {"north": "au nord", "south": "au sud", "east": "à l'est", "west": "à l'ouest"}
-# "de"/"du"/"de la" agreement with the place name's gender can't be determined from
-# data alone — "de" is used uniformly, which reads slightly informally in French
-# but is unambiguous and never grammatically wrong the way "du"/"de la" could be.
-# TODO (next step): same issue for the article before the place itself. Since FR
-# questions use exonyms (02_fill_and_validate.py), countries/regions now read
-# "où se trouve Espagne" / "villes frontalières de Maroc" instead of "l'Espagne" /
-# "du Maroc". Cities take no article ("à Lyon"), countries/regions do, with gender
-# and elision (le Maroc, la France, l'Espagne, les Pays-Bas) — needs the division
-# subtype carried through to here, plus a small gender table for countries/regions.
+
+# Grammatical gender of each country's FR name, keyed by ISO 3166-1 alpha-2 code
+# (`place_country_code`, set by 01_sample_entities.py when the place *is* a country):
+# "m" -> le Maroc, "f" -> la France, "pl" -> les Pays-Bas, None -> no article (Cuba,
+# Malte, Israël...). "le"/"la" elide before a vowel (l'Espagne, l'Afghanistan), so
+# there's no separate "l'" entry. Hand-written: Overture has no gender data. A code
+# missing here gets no article, same as None. A few depend on which FR name Overture
+# uses: CD/CG (République ... du Congo -> f), MM (Birmanie -> f, Myanmar -> m).
+FR_COUNTRY_GENDER = {
+    "AD": "f", "AE": "pl", "AF": "m", "AG": None, "AI": None, "AL": "f", "AM": "f",
+    "AO": "m", "AQ": "m", "AR": "f", "AS": "pl", "AT": "f", "AU": "f", "AW": None,
+    "AX": None, "AZ": "m", "BA": "f", "BB": "f", "BD": "m", "BE": "f", "BF": "m",
+    "BG": "f", "BH": None, "BI": "m", "BJ": "m", "BL": None, "BM": "pl", "BN": "m",
+    "BO": "f", "BQ": "pl", "BR": "m", "BS": "pl", "BT": "m", "BV": None, "BW": "m",
+    "BY": "f", "BZ": "m", "CA": "m", "CC": "pl", "CD": "f", "CF": "f", "CG": "f",
+    "CH": "f", "CI": "f", "CK": "pl", "CL": "m", "CM": "m", "CN": "f", "CO": "f",
+    "CR": "m", "CU": None, "CV": "m", "CW": None, "CX": "f", "CY": None, "CZ": "f",
+    "DE": "f", "DJ": None, "DK": "m", "DM": "f", "DO": "f", "DZ": "f", "EC": "m",
+    "EE": "f", "EG": "f", "EH": "m", "ER": "f", "ES": "f", "ET": "f", "FI": "f",
+    "FJ": "pl", "FK": "pl", "FM": "f", "FO": "pl", "FR": "f", "GA": "m", "GB": "m",
+    "GD": "f", "GE": "f", "GF": "f", "GG": None, "GH": "m", "GI": None, "GL": "m",
+    "GM": "f", "GN": "f", "GP": "f", "GQ": "f", "GR": "f", "GS": "f", "GT": "m",
+    "GU": None, "GW": "f", "GY": "m", "HK": None, "HM": "pl", "HN": "m", "HR": "f",
+    "HT": None, "HU": "f", "ID": "f", "IE": "f", "IL": None, "IM": "f", "IN": "f",
+    "IO": "m", "IQ": "m", "IR": "m", "IS": "f", "IT": "f", "JE": None, "JM": "f",
+    "JO": "f", "JP": "m", "KE": "m", "KG": "m", "KH": "m", "KI": None, "KM": "pl",
+    "KN": None, "KP": "f", "KR": "f", "KW": "m", "KY": "pl", "KZ": "m", "LA": "m",
+    "LB": "m", "LC": None, "LI": "m", "LK": "m", "LR": "m", "LS": "m", "LT": "f",
+    "LU": "m", "LV": "f", "LY": "f", "MA": "m", "MC": None, "MD": "f", "ME": "m",
+    "MF": None, "MG": None, "MH": "pl", "MK": "f", "ML": "m", "MM": "f", "MN": "f",
+    "MO": None, "MP": "pl", "MQ": "f", "MR": "f", "MS": None, "MT": None, "MU": None,
+    "MV": "pl", "MW": "m", "MX": "m", "MY": "f", "MZ": "m", "NA": "f", "NC": "f",
+    "NE": "m", "NF": "f", "NG": "m", "NI": "m", "NL": "pl", "NO": "f", "NP": "m",
+    "NR": None, "NU": None, "NZ": "f", "OM": None, "PA": "m", "PE": "m", "PF": "f",
+    "PG": "f", "PH": "pl", "PK": "m", "PL": "f", "PM": None, "PN": None, "PR": None,
+    "PS": "f", "PT": "m", "PW": "pl", "PY": "m", "QA": "m", "RE": None, "RO": "f",
+    "RS": "f", "RU": "f", "RW": "m", "SA": "f", "SB": "pl", "SC": "pl", "SD": "m",
+    "SE": "f", "SG": None, "SH": None, "SI": "f", "SJ": "m", "SK": "f", "SL": "f",
+    "SM": None, "SN": "m", "SO": "f", "SR": "m", "SS": "m", "ST": None, "SV": "m",
+    "SX": None, "SY": "f", "SZ": "m", "TC": "pl", "TD": "m", "TF": "pl", "TG": "m",
+    "TH": "f", "TJ": "m", "TK": None, "TL": "m", "TM": "m", "TN": "f", "TO": None,
+    "TR": "f", "TT": None, "TV": None, "TW": None, "TZ": "f", "UA": "f", "UG": "m",
+    "UM": "pl", "US": "pl", "UY": "m", "UZ": "m", "VA": "m", "VC": None, "VE": "m",
+    "VG": "pl", "VI": "pl", "VN": "m", "VU": "m", "WF": None, "WS": None, "XK": "m",
+    "YE": "m", "YT": None, "ZA": "f", "ZM": "f", "ZW": "m",
+}
+# No "y": le Yémen. No "h" either: h muet vs aspiré can't be told from the spelling
+# (l'Hérault / le Honduras), and "de Hambourg" is never wrong the way "d'Honduras" is.
+FR_VOWELS = set("aeiouâàäéèêëîïôöûüœæ")
+# de/à + le/les contract (du Maroc, aux Pays-Bas, au Havre); + la/l' don't.
+FR_CONTRACTIONS = {("de", "le"): "du", ("de", "les"): "des", ("à", "le"): "au", ("à", "les"): "aux"}
+
+
+def fr_article(place: str, params: dict) -> tuple[str, str]:
+    """Splits the FR place into (article, rest), article lowercase, "" if none.
+
+    Countries get theirs from FR_COUNTRY_GENDER, only when `place` is the FR exonym
+    (not a kept local name like "España"). A city whose name starts with "Le "/"Les "
+    ("Le Havre") has its article split off too, so it contracts ("au Havre") —
+    "La"/"L'" never contract, so those names are left whole ("de La Rochelle")."""
+    code = params.get("place_country_code")
+    if code is not None:
+        gender = FR_COUNTRY_GENDER.get(code)
+        if gender is None or not params.get("place_is_exonym"):
+            return "", place
+        if gender == "pl":
+            return "les", place
+        if place[:1].lower() in FR_VOWELS:
+            return "l'", place
+        return ("le" if gender == "m" else "la"), place
+    for article in ("Le", "Les"):
+        if place.startswith(article + " "):
+            return article.lower(), place[len(article) + 1:]
+    return "", place
+
+
+def fr_place(place: str, params: dict) -> str:
+    """Bare FR place, with its article when it's a country ("l'Espagne", "Lyon")."""
+    if params.get("place_country_code") is None:
+        return place  # "montre-moi Le Havre": the city's own article stays capitalized
+    article, rest = fr_article(place, params)
+    if not article:
+        return rest
+    return f"{article}{rest}" if article == "l'" else f"{article} {rest}"
+
+
+def fr_with_prep(prep: str, place: str, params: dict) -> str:
+    """ "de"/"à" + FR place, contracted/elided: du Maroc, de la France, de l'Espagne,
+    des Pays-Bas, d'Orléans, au Havre, à Lyon."""
+    article, rest = fr_article(place, params)
+    if (prep, article) in FR_CONTRACTIONS:
+        return f"{FR_CONTRACTIONS[(prep, article)]} {rest}"
+    if article:
+        return f"{prep} {fr_place(place, params)}"
+    if prep == "de" and place[:1].lower() in FR_VOWELS:
+        return f"d'{place}"
+    return f"{prep} {place}"
+
 
 PHRASES = {
     "containment": {
         "en": ["{category} in {place}", "{category} located in {place}"],
-        "fr": ["{category} à {place}", "{category} situés à {place}"],
+        "fr": ["{category} {a_place}", "{category} situés {a_place}"],
     },
     "proximity": {
         "en": ["{category} near {place}", "{category} close to {place}", "{category} in the vicinity of {place}"],
-        "fr": ["{category} près de {place}", "{category} à proximité de {place}", "{category} pas loin de {place}"],
+        "fr": ["{category} près {de_place}", "{category} à proximité {de_place}", "{category} pas loin {de_place}"],
     },
     "along": {
         "en": ["{category} along {feature}", "{category} along the {feature}"],
@@ -104,23 +193,23 @@ PHRASES = {
     },
     "center": {
         "en": ["{category} in the center of {place}", "{category} in downtown {place}"],
-        "fr": ["{category} dans le centre de {place}", "{category} en centre-ville de {place}"],
+        "fr": ["{category} dans le centre {de_place}", "{category} en centre-ville {de_place}"],
     },
     "periphery": {
         "en": ["{category} on the outskirts of {place}", "{category} at the edge of {place}"],
-        "fr": ["{category} en périphérie de {place}", "{category} en bordure de {place}"],
+        "fr": ["{category} en périphérie {de_place}", "{category} en bordure {de_place}"],
     },
     "direction": {
         "en": ["{category} {direction_en} of {place}"],
-        "fr": ["{category} {direction_fr} de {place}"],
+        "fr": ["{category} {direction_fr} {de_place}"],
     },
     "direction_distance": {
         "en": ["{category} {distance} {direction_en} of {place}"],
-        "fr": ["{category} à {distance} {direction_fr} de {place}"],
+        "fr": ["{category} à {distance} {direction_fr} {de_place}"],
     },
     "area_distance": {
         "en": ["{category} within {distance} around {place}", "{category} within {distance} of {place}"],
-        "fr": ["{category} à moins de {distance} autour de {place}", "{category} à moins de {distance} de {place}"],
+        "fr": ["{category} à moins de {distance} autour {de_place}", "{category} à moins de {distance} {de_place}"],
     },
     "left_right_bank": {
         "en": ["{category} on the {side} bank of {feature}"],
@@ -130,23 +219,23 @@ PHRASES = {
         # No {category}: the entity is always "cities" (divisions, subtype='locality')
         # for this template — see TEMPLATES.md "10. Bordering a place".
         "en": ["cities bordering {place}", "cities near the border of {place}", "cities close to the {place} border"],
-        "fr": ["villes frontalières de {place}", "villes proches de la frontière de {place}", "villes à la frontière de {place}"],
+        "fr": ["villes frontalières {de_place}", "villes proches de la frontière {de_place}", "villes à la frontière {de_place}"],
     },
     "show_division": {
         # No {category}: this template resolves a place name to its geometry, it
         # doesn't search for entities within/near it — see TEMPLATES.md "11. Show a division".
         "en": ["show me {place}", "where is {place}", "show {place} on the map"],
-        "fr": ["montre-moi {place}", "où se trouve {place}", "affiche {place} sur la carte"],
+        "fr": ["montre-moi {place}", "où {se_trouve} {place}", "affiche {place} sur la carte"],
     },
     "city_direction": {
         # No {category}: the entity is always "cities" (divisions, subtype='locality')
         # for this template, like "bordering" — see TEMPLATES.md "12. Cities in a direction".
         "en": ["cities {direction_en} of {place}"],
-        "fr": ["villes {direction_fr} de {place}"],
+        "fr": ["villes {direction_fr} {de_place}"],
     },
     "city_direction_distance": {
         "en": ["cities {distance} {direction_en} of {place}"],
-        "fr": ["villes à {distance} {direction_fr} de {place}"],
+        "fr": ["villes à {distance} {direction_fr} {de_place}"],
     },
 }
 # `places` templates reuse the same phrasing shapes as their `infrastructures`
@@ -196,7 +285,13 @@ def build_questions(template: str, params: dict, lang: str) -> list[str]:
     feature = params.get("feature")
     if place is not None:
         fields_en["place"] = place
-        fields_fr["place"] = place
+        fields_fr["place"] = fr_place(place, params)
+        fields_fr["de_place"] = fr_with_prep("de", place, params)
+        fields_fr["a_place"] = fr_with_prep("à", place, params)
+        # "où se trouvent les Pays-Bas" — plural countries only; a city named
+        # "Les Sables-d'Olonne" is one place, so it stays singular.
+        plural = params.get("place_country_code") is not None and fr_article(place, params)[0] == "les"
+        fields_fr["se_trouve"] = "se trouvent" if plural else "se trouve"
     if feature is not None:
         fields_en["feature"] = feature
         fields_fr["feature"] = feature
