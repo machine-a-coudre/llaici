@@ -21,6 +21,9 @@ FINETUNE_PY := $(FINETUNE_VENV)/bin/python
 # the max CUDA version the driver supports. cu132+ has no recent xformers wheels,
 # which Unsloth needs, so cu130 is the newest usable one (-> torch 2.12).
 TORCH_BACKEND ?= cu130
+# Local clone of ggml-org/llama.cpp, used by the GGUF export (merge-and-quantize*):
+#   git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp
+LLAMA_CPP_DIR ?= $(HOME)/llama.cpp
 
 .PHONY: download-overture download-overture-places up build-up down sample-entities merge-samples validate-samples generate-questions split-dataset format-for-training generate-dataset finetune-venv finetune finetune-mlx evaluate merge-and-quantize merge-and-quantize-mlx finetune-pipeline-cuda finetune-pipeline-mlx app-up app-build-up app-down
 
@@ -140,10 +143,12 @@ evaluate: $(FINETUNE_VENV)/.ready
 	$(PRINT_THREADS)
 	$(FINETUNE_PY) scripts/07_evaluate.py --threads $(THREADS) $(UNSLOTH_MODEL_ARGS)
 
-# STEP 5, §6: merge the LoRA adapter and export to quantized GGUF (see FINETUNING.md, scripts/08_merge_and_quantize.py)
-# ⚠️ Same CUDA/Unsloth requirement as `finetune` — needs an adapter from that step first.
+# STEP 5, §6: merge the LoRA adapter (PEFT, on CPU) + convert/quantize to GGUF
+# (llama.cpp's convert_hf_to_gguf.py) — see FINETUNING.md, scripts/08_merge_and_quantize.py.
+# Needs an adapter from `finetune` and a local ggml-org/llama.cpp clone (LLAMA_CPP_DIR).
+# Example: make merge-and-quantize LLAMA_CPP_DIR=~/llama.cpp
 merge-and-quantize: $(FINETUNE_VENV)/.ready
-	$(FINETUNE_PY) scripts/08_merge_and_quantize.py $(if $(MODEL),--model-name $(MODEL))
+	$(FINETUNE_PY) scripts/08_merge_and_quantize.py --llama-cpp-dir $(LLAMA_CPP_DIR) $(if $(MODEL),--model-name $(MODEL))
 
 # STEP 5, §6 Apple Silicon alternative: merge (mlx_lm.fuse) + convert/quantize to
 # GGUF (llama.cpp's convert_hf_to_gguf.py) for an adapter from `finetune-mlx`.
@@ -155,7 +160,9 @@ merge-and-quantize-mlx:
 # STEP 5, full pipeline (CUDA/Unsloth path): fine-tune -> evaluate -> merge/quantize
 # to GGUF (FINETUNING.md §3-6). Assumes data/training/{train,val}_formatted.jsonl
 # already exist (see `generate-dataset`). Chains the 3 targets above in order.
-# ⚠️ Requires a CUDA GPU (venv set up automatically, see `finetune-venv`).
+# ⚠️ Requires a CUDA GPU (venv set up automatically, see `finetune-venv`) and a
+# local ggml-org/llama.cpp clone for the GGUF export.
+# Example: make finetune-pipeline-cuda LLAMA_CPP_DIR=~/llama.cpp
 finetune-pipeline-cuda: finetune evaluate merge-and-quantize
 
 # STEP 5, full pipeline (Apple Silicon/mlx-lm path): fine-tune -> merge/quantize to

@@ -50,7 +50,7 @@ Each step is a script under `scripts/`, numbered in the order it runs.
 | **07** | Evaluate the fine-tuned model |
 | **08** | Merge and quantize the model to GGUF |
 
-Steps 00-05 (data preparation) run fine on a regular machine and have all been tested against real data. Steps 06-08 (fine-tuning) need an NVIDIA GPU with CUDA. Step 06 has been tested end to end on an NVIDIA RTX 50xx (Blackwell) GPU with a small dataset. Steps 07-08 haven't been run yet — see [`docs/FINETUNING.md`](docs/FINETUNING.md) for details.
+Steps 00-05 (data preparation) run fine on a regular machine and have all been tested against real data. Steps 06-08 (fine-tuning) need an NVIDIA GPU with CUDA. Steps 06-08 have been tested end to end on an NVIDIA RTX 50xx (Blackwell) GPU with a small test dataset (the pipeline works; the model's quality at full dataset size hasn't been measured yet) — see [`docs/FINETUNING.md`](docs/FINETUNING.md) for details.
 
 👉 **For the exact command for each step, see [`docs/PIPELINE.md`](docs/PIPELINE.md).**
 
@@ -72,10 +72,12 @@ docker compose up duckdb        # once: builds the DuckDB views (00_init.sql) on
 make generate-dataset ROWS=70000 THREADS=10   # steps 01-05: sample, validate, generate questions, split, format
 
 make finetune-venv                            # optional: the CUDA targets below build this environment themselves if missing (see below)
-make finetune-pipeline-cuda                   # steps 06-08: fine-tune, evaluate, merge/quantize — NVIDIA GPU (CUDA)
+make finetune-pipeline-cuda LLAMA_CPP_DIR=~/llama.cpp   # steps 06-08: fine-tune, evaluate, merge/quantize — NVIDIA GPU (CUDA)
 # or, on a Mac:
 make finetune-pipeline-mlx LLAMA_CPP_DIR=~/llama.cpp   # steps 06+08 — Apple Silicon (mlx-lm), see FINETUNING.md
 ```
+
+Both paths export the final GGUF with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s converter, so they need a local clone of it: `git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp`, then pass its path with `LLAMA_CPP_DIR`.
 
 `THREADS` defaults to **2** (kept low on purpose, to stay light on whatever machine this runs on) — raise it to match your CPU's actual core count (e.g. `THREADS=10` on a 10-core machine) for a much faster run; see `docs/PIPELINE.md` for details.
 

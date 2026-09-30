@@ -97,18 +97,19 @@ Unsloth's kernels are CUDA/Triton-based — it doesn't run on a Mac (MPS support
 - Markdown-fence stripping (`extract_sql()`) handles the common case of a chat model wrapping its answer in \`\`\`sql ... \`\`\` despite the system prompt asking for "SQL only" — tested against real DuckDB (valid query, syntax error, empty result all handled correctly) even though the model-inference half of the script couldn't be (see below).
 - **Generalization check** (not automated by this script): test on question phrasings that don't exactly match any of `03_generate_questions.py`'s hand-written templates (a paraphrase, a reordering, a synonym) — the validation split alone won't catch overfitting to the *exact* phrase templates, since validation examples were built from the same fixed phrase list as training. Would need manually-written held-out questions, not currently done.
 
-⚠️ Same CUDA/Unsloth requirement as §3/§4's `06_finetune.py`, plus a LoRA adapter it produces — not run/tested end-to-end on this dev machine (only the pure-Python helpers, `extract_sql`/`result_ids`, were verified against the real database).
+⚠️ Same CUDA/Unsloth requirement as §3/§4's `06_finetune.py`, plus a LoRA adapter it produces. Tested end to end on a small-dataset adapter.
 
 ---
 
 ## 6. Merge and quantize
 
-**Implemented**: `scripts/08_merge_and_quantize.py` (`make merge-and-quantize`).
+**Implemented**: `scripts/08_merge_and_quantize.py` (`make merge-and-quantize LLAMA_CPP_DIR=~/llama.cpp`). Two explicit steps, the same shape as the MLX path below:
 
-- **Merge**: reloads the adapter via `FastLanguageModel.from_pretrained(model_name=<adapter_dir>, ...)` (Unsloth's documented way to reattach a saved adapter to its base model), then a single `model.save_pretrained_gguf(...)` call does the merge internally — no separate merge step needed, verified against Unsloth's docs rather than assumed. Unsloth dequantizes the 4-bit base weights before merging in the adapter, to avoid compounding quantization error.
-- **Convert to GGUF and quantize to Q8**: same call, `quantization_method="q8_0"` — confirmed as a real, documented option (alongside `q4_k_m`, `f16`, etc.) and the specific level `DESIGN.md` names ("Quantize to GGUF Q8 (~800 MB)").
+- **Merge, with PEFT**: loads the **16-bit** base model (the adapter's `base_model_name_or_path` minus its 4-bit suffix, e.g. `unsloth/Qwen3-0.6B-unsloth-bnb-4bit` → `unsloth/qwen3-0.6b`), attaches the adapter with `PeftModel.from_pretrained`, calls `merge_and_unload()`, and saves a plain Hugging Face model to `models/llaici-<model>-merged/`. Merging into 16-bit rather than the 4-bit training base avoids compounding quantization error. Runs on CPU, no Unsloth. The tokenizer is saved from the adapter directory, so the GGUF embeds the chat template the model was trained with. Verified on a real adapter: the attention/MLP weights LoRA targets change, the others (embeddings) stay identical.
+- **Convert + quantize**: llama.cpp's `convert_hf_to_gguf.py --outtype q8_0` writes the GGUF directly (`DESIGN.md`: "Quantize to GGUF Q8 (~800 MB)"). Levels like `q4_k_m` would need llama.cpp's compiled `llama-quantize` on top, not handled.
+- **Why not Unsloth's `save_pretrained_gguf`** (the first version of this script): it copies the base weights out of the Hugging Face cache and merges the adapter into that copy in place. With read-only cache files, the copy is read-only too and the merge fails (`Permission denied`), and working around it meant changing file permissions. PEFT writes fresh files instead.
 
-⚠️ Same CUDA/Unsloth requirement and untested status as §3/§4/§5's scripts.
+✅ **Tested end to end** on a small-dataset adapter: Qwen3 0.6B gives a ~610 MB `q8_0` GGUF (~596M parameters × ~1.06 bytes each; `DESIGN.md`'s "~800 MB" was for the 0.8B model it originally planned), from a ~1.1 GB merged 16-bit model.
 
 ### Apple Silicon alternative: `scripts/08_merge_and_quantize_mlx.py`
 
@@ -136,7 +137,7 @@ Requires a local clone of `ggml-org/llama.cpp` (`--llama-cpp-dir`/`LLAMA_CPP_DIR
 
 - **Hyperparameters** (rank, epochs, LR) are `DESIGN.md` defaults, not tuned against this project's actual dataset size/composition (currently far below the 10k-70k target — see chat history on `ROWS` sizing).
 - **System message wording** (`scripts/05_format_for_training.py --system`) — a first reasonable default, not tested against actual model behavior.
-- **`scripts/07_evaluate.py` and `scripts/08_merge_and_quantize.py` are unverified end-to-end** — written against Unsloth's documented API/model catalog, but never executed yet. (`scripts/06_finetune.py` has since run end to end on a small dataset, see §3.) Running them for the first time on real GPU hardware may surface API mismatches (Unsloth/TRL/PEFT version differences, e.g. `SFTConfig` field availability) the way `TEMPLATES.md`'s SQL templates surfaced real bugs the first time *they* ran against real data. `07_evaluate.py`'s pure-Python parts (SQL cleanup, DuckDB execution/comparison) were tested in isolation; the model-loading/generation half wasn't.
+- **Steps 06-08 have only run on a small test dataset** (~100 training examples). They work end to end, and their first runs surfaced real bugs (truncated generation, random sampling during evaluation, the read-only merge — see `TROUBLESHOOTING.md`), but training time and model quality at full dataset size are still unmeasured.
 - **Generalization check with hand-written held-out questions** — not automated (§5).
 
 ## Next step, once a first model exists

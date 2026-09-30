@@ -191,7 +191,7 @@ Saves a LoRA adapter to `models/llaici-<model>-lora/` (`llaici-qwen3-0.6b-lora/`
 
 ## Step 07 — Evaluate the fine-tuned model (`scripts/07_evaluate.py`)
 
-`FINETUNING.md` §5. For each held-out validation question, generates SQL with the fine-tuned model and executes it against the real DuckDB views, comparing the result to the gold SQL's own result (not just "did it run"). Same CUDA/Unsloth requirement as step 06, and needs an adapter from that step first — **not run/tested** here either.
+`FINETUNING.md` §5. For each held-out validation question, generates SQL with the fine-tuned model and executes it against the real DuckDB views, comparing the result to the gold SQL's own result (not just "did it run"). Same CUDA/Unsloth requirement as step 06, and needs an adapter from that step first. Tested end to end on a small-dataset adapter.
 
 ```bash
 make evaluate
@@ -204,10 +204,16 @@ Writes per-example detail (question, gold SQL, generated SQL, outcome) to `model
 
 ## Step 08 — Merge and quantize to GGUF Q8 (`scripts/08_merge_and_quantize.py`)
 
-`FINETUNING.md` §6. Merges the LoRA adapter into the base model and exports a single quantized GGUF file (`quantization_method=q8_0`, `DESIGN.md`'s ~800MB target), ready for `llama-server` (`FINETUNING.md` §7). Same CUDA/Unsloth requirement as steps 06-07 — **not run/tested** here either.
+`FINETUNING.md` §6. Two steps, both explicit:
+1. **Merge** (PEFT, on CPU, no Unsloth): loads the 16-bit version of the base model (derived from the adapter's `adapter_config.json`, e.g. `unsloth/qwen3-0.6b`, ~1.2 GB downloaded on first use), attaches the adapter, merges, and saves a plain Hugging Face model to `models/llaici-<model>-merged/`.
+2. **Convert + quantize**: llama.cpp's `convert_hf_to_gguf.py` turns it into a single GGUF file (`--outtype q8_0`, `DESIGN.md`'s target), ready for `llama-server` (`FINETUNING.md` §7).
+
+Needs a local clone of [llama.cpp](https://github.com/ggml-org/llama.cpp) (`LLAMA_CPP_DIR`). The converter runs with the fine-tuning venv's Python: if it reports a missing module, see `TROUBLESHOOTING.md` "Merge and export (step 08)".
 
 ```bash
-make merge-and-quantize
+git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp   # once
+make merge-and-quantize LLAMA_CPP_DIR=~/llama.cpp
+make merge-and-quantize LLAMA_CPP_DIR=~/llama.cpp MODEL=unsloth/Qwen3-1.7B-unsloth-bnb-4bit   # another trained model
 ```
 
-Writes the GGUF model to `models/llaici-<model>-gguf/` (`llaici-qwen3-0.6b-gguf/` with the default model).
+Writes `models/llaici-<model>-gguf/llaici-<model>.q8_0.gguf` (`llaici-qwen3-0.6b-gguf/llaici-qwen3-0.6b.q8_0.gguf` with the default model). The intermediate `models/llaici-<model>-merged/` (~1.1 GB for Qwen3 0.6B) can be deleted afterwards. Tested end to end: Qwen3 0.6B gives a ~610 MB `q8_0` GGUF.

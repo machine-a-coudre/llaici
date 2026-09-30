@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """FINETUNING.md §6, Apple Silicon alternative to scripts/08_merge_and_quantize.py.
 
-scripts/08_merge_and_quantize.py merges the LoRA adapter and quantizes to GGUF in
-one Unsloth call (`save_pretrained_gguf`) — CUDA-only, same reason as
-scripts/06_finetune.py. For an adapter trained with scripts/06_finetune_mlx.py
-(mlx-lm), this script does the equivalent in two separate steps instead, since no
-single mlx-lm call does both:
+scripts/08_merge_and_quantize.py merges an Unsloth-trained adapter with PEFT, then
+converts it with llama.cpp. For an adapter trained with scripts/06_finetune_mlx.py
+(mlx-lm), this script does the same two steps with mlx-lm's own merge instead:
 
 1. **Merge**: `mlx_lm.fuse` reattaches the LoRA adapter to the base model and
    writes a Hugging Face-compatible directory (`config.json` + `.safetensors` +
@@ -13,8 +11,8 @@ single mlx-lm call does both:
    not guessed. `--dequantize` is required here: scripts/06_finetune_mlx.py trains
    QLoRA against a 4-bit base (`mlx-community/Qwen3-0.6B-4bit`), and fusing a LoRA
    delta into still-quantized weights would compound the base model's own
-   quantization error into the merge (same reasoning scripts/08_merge_and_quantize.py's
-   docstring gives for Unsloth's own dequantize-before-merge behavior).
+   quantization error into the merge (same reasoning as scripts/08_merge_and_quantize.py
+   merging into the 16-bit base model).
    `mlx_lm.fuse --export-gguf` is **not** used for this: confirmed directly in
    `mlx_lm/fuse.py` — it raises `ValueError` unless `config["model_type"]` is
    `llama`/`mixtral`/`mistral`; Qwen3's model_type isn't in that list.

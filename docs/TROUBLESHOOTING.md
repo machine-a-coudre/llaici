@@ -98,3 +98,19 @@ Change one thing at a time and re-run `make finetune` + `make evaluate`, so you 
 
 - **No timeout on generated SQL**: a badly filtered spatial query (e.g. a join over the whole `infrastructures` table) can run for a very long time or exhaust memory. Not hit yet; step 01 has a hard timeout for the same reason, worth adding here if it happens.
 - **No `<think>…</think>` stripping**: not needed so far (the `qwen3-instruct` template produced none), but would turn correct SQL into `syntax_error` if a model emitted reasoning tags.
+
+---
+
+## Merge and export (step 08)
+
+### `Permission denied: 'models/llaici-<model>-gguf/model.safetensors'` (first version of step 08)
+
+The first version of `08_merge_and_quantize.py` used Unsloth's `save_pretrained_gguf`. To merge, Unsloth downloads the **16-bit** version of the base model (e.g. `unsloth/qwen3-0.6b`, ~1.2 GB, on top of the 4-bit one used for training), copies its `model.safetensors` into the output directory, then writes the adapter into that copy in place. Files in the Hugging Face cache can be read-only (mode `444`), and the copy keeps that mode, so the in-place write fails.
+
+Rather than changing file permissions, step 08 was rewritten: the merge is now done with PEFT, which writes fresh files (`models/llaici-<model>-merged/`), and the GGUF conversion with llama.cpp's `convert_hf_to_gguf.py` (see `FINETUNING.md` §6). A failed run of the old version may have left a read-only `models/llaici-<model>-gguf/model.safetensors` behind (plus its `config.json`, tokenizer files...): they're not used anymore and can be deleted.
+
+The `Cache check failed: tokenizer.model not found in local cache` line of that old version was harmless: Qwen3 has no `tokenizer.model` file (it uses `tokenizer.json`).
+
+### `convert_hf_to_gguf.py` fails with `ModuleNotFoundError`
+
+The converter runs with the fine-tuning venv's Python, which has `torch`, `transformers` and `numpy` but maybe not everything llama.cpp's converter imports. Install its requirements into the venv: `uv pip install --python .venv-finetune/bin/python -r ~/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt`. If that tries to change the `torch` version, install only the missing module the error named instead.

@@ -228,7 +228,7 @@ def print_verdict(counts: dict[str, int], truncated: int, args: argparse.Namespa
             }[worst])
         advice.append("what to do, in detail: docs/TROUBLESHOOTING.md \"Evaluation (step 07)\"")
     else:
-        advice.append(f"export it: make merge-and-quantize MODEL={args.model_name}")
+        advice.append(f"export it: make merge-and-quantize MODEL={args.model_name} LLAMA_CPP_DIR=<llama.cpp clone>")
     print_box(title, rows, advice, status=status)
 
 

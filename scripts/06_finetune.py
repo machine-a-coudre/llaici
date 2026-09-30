@@ -156,7 +156,7 @@ def main() -> None:
         ],
         [
             f"check its SQL:      make evaluate{model_arg}",
-            f"export to GGUF:     make merge-and-quantize{model_arg}",
+            f"export to GGUF:     make merge-and-quantize{model_arg} LLAMA_CPP_DIR=<llama.cpp clone>",
         ],
     )
 
